@@ -165,6 +165,7 @@ function SessionTabs({ workspaceId, activeId }: { workspaceId: string; activeId?
           session={x}
           agentName={agents.find((a) => a.id === x.agentId)?.name ?? x.agentId}
           active={x.id === activeId}
+          closable={sessions.length > 1}
         />
       ))}
       <button
@@ -178,7 +179,17 @@ function SessionTabs({ workspaceId, activeId }: { workspaceId: string; activeId?
   );
 }
 
-function SessionTab({ session, agentName, active }: { session: Session; agentName: string; active: boolean }) {
+function SessionTab({
+  session,
+  agentName,
+  active,
+  closable,
+}: {
+  session: Session;
+  agentName: string;
+  active: boolean;
+  closable: boolean;
+}) {
   // Only non-idle states get a dot; idle chats stay calm.
   const dot = useStore((s) => {
     const v = s.views[session.id];
@@ -208,15 +219,17 @@ function SessionTab({ session, agentName, active }: { session: Session; agentNam
       <AgentIcon agent={session.agentId} size={12} />
       <span className={clsx("truncate", active && "font-medium", !session.title && "text-muted")}>{session.title || "New chat"}</span>
       {dot && <span className={clsx("h-1.5 w-1.5 shrink-0 rounded-full", dot)} />}
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          void actions.closeSession(session.workspaceId, session.id);
-        }}
-        className="invisible shrink-0 rounded p-0.5 hover:bg-bg group-hover:visible"
-      >
-        <X size={11} />
-      </button>
+      {closable && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            void actions.closeSession(session.workspaceId, session.id);
+          }}
+          className="invisible shrink-0 rounded p-0.5 hover:bg-bg group-hover:visible"
+        >
+          <X size={11} />
+        </button>
+      )}
     </div>
   );
 }

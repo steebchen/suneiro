@@ -546,6 +546,8 @@ export const actions = {
   },
 
   async closeSession(workspaceId: string, sessionId: string) {
+    // A workspace always keeps at least one chat, so the view never goes blank.
+    if ((get().sessions[workspaceId] ?? []).length <= 1) return;
     await guard(api.deleteSession(sessionId));
     const s = get();
     const list = (s.sessions[workspaceId] ?? []).filter((x) => x.id !== sessionId);
