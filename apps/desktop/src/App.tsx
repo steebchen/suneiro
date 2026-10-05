@@ -53,8 +53,7 @@ function runCommand(id: string, setPalette: Toggle, setShortcuts?: Toggle) {
     }
     case "new-chat": {
       if (!ws || s.page !== "workspace") return;
-      const first = s.settings?.loadout[0];
-      void actions.createSession(ws.id, first?.agent ?? "claude", first?.model, first?.effort);
+      void actions.newChat(ws.id);
       return;
     }
     case "close-chat": {

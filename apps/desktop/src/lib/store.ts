@@ -426,9 +426,14 @@ export const actions = {
   /** Show a new workspace and open its first chat. */
   async workspaceCreated(ws: Workspace) {
     set({ workspaces: [ws, ...get().workspaces], sessions: { ...get().sessions, [ws.id]: [] }, selectedWorkspace: ws.id, page: "workspace" });
+    await actions.newChat(ws.id);
+  },
+
+  /** Open a chat with the default model (first loadout entry); the composer's picker changes it later. */
+  async newChat(workspaceId: string) {
     const first = get().settings?.loadout[0];
-    if (first) await actions.createSession(ws.id, first.agent, first.model, first.effort);
-    else await actions.createSession(ws.id, get().settings?.defaultAgent ?? "claude");
+    if (first) await actions.createSession(workspaceId, first.agent, first.model, first.effort);
+    else await actions.createSession(workspaceId, get().settings?.defaultAgent ?? "claude");
   },
 
   async archiveWorkspace(workspaceId: string) {

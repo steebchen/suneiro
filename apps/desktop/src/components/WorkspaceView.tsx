@@ -3,12 +3,11 @@ import clsx from "clsx";
 import { Archive, ExternalLink, GitBranch, GitPullRequest, Loader2, PanelRight, Plus, X } from "lucide-react";
 import { useResizable } from "../lib/resize";
 import { ResizeHandle } from "./ResizeHandle";
-import { actions, enabledAgents, toast, useStore } from "../lib/store";
-import { useShallow } from "zustand/react/shallow";
-import { AgentIcon, effortName, findModel, modelName } from "../lib/models";
+import { actions, toast, useStore } from "../lib/store";
+import { AgentIcon, findModel, modelName } from "../lib/models";
 import { PR_TAB, PrView } from "./PrView";
 import { prAppearance } from "../lib/pr";
-import { api, type LoadoutEntry, type Session } from "../lib/api";
+import { api, type Session } from "../lib/api";
 import { Chat } from "./Chat";
 import { ChangesPanel } from "./ChangesPanel";
 import { TerminalPanel } from "./TerminalPanel";
@@ -143,15 +142,9 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
   );
 }
 
-const NO_LOADOUT: LoadoutEntry[] = [];
-
 function SessionTabs({ workspaceId, activeId }: { workspaceId: string; activeId?: string }) {
   const sessions = useStore((s) => s.sessions[workspaceId]) ?? [];
   const agents = useStore((s) => s.agents);
-  const menuAgents = useStore(useShallow(enabledAgents));
-  const loadout = useStore((s) => s.settings?.loadout) ?? NO_LOADOUT;
-  const catalogs = useStore((s) => s.catalogs);
-  const featured = loadout.filter((l) => menuAgents.some((a) => a.id === l.agent));
   const pr = useStore((s) => s.prs[workspaceId]);
   return (
     <div className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto overflow-y-hidden border-b border-border px-2">
@@ -174,20 +167,13 @@ function SessionTabs({ workspaceId, activeId }: { workspaceId: string; activeId?
           active={x.id === activeId}
         />
       ))}
-      <Menu
-        label={<Plus size={13} />}
-        align="left"
-        empty="No agents enabled"
-        items={[
-          ...featured.map((l) => ({
-            label: `${modelName(l.agent, findModel(catalogs, l.agent, l.model), l.model)} · ${effortName(catalogs, l.agent, l.effort)}`,
-            onSelect: () => actions.createSession(workspaceId, l.agent, l.model, l.effort),
-          })),
-          ...menuAgents
-            .filter((a) => !featured.some((l) => l.agent === a.id))
-            .map((a) => ({ label: a.name, onSelect: () => actions.createSession(workspaceId, a.id) })),
-        ]}
-      />
+      <button
+        title="New chat (⌘T)"
+        onClick={() => void actions.newChat(workspaceId)}
+        className="shrink-0 rounded px-1.5 py-1 text-xs text-muted hover:bg-hover hover:text-fg"
+      >
+        <Plus size={13} />
+      </button>
     </div>
   );
 }
@@ -205,8 +191,13 @@ function SessionTab({ session, agentName, active }: { session: Session; agentNam
     const value = session.model;
     return value ? modelName(session.agentId, findModel(s.catalogs, session.agentId, value), value) : "";
   });
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (active) ref.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [active]);
   return (
     <div
+      ref={ref}
       onClick={() => actions.selectSession(session.workspaceId, session.id)}
       title={[agentName, model].filter(Boolean).join(" · ")}
       className={clsx(
