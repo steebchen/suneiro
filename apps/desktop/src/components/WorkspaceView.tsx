@@ -177,6 +177,7 @@ function SessionTabs({ workspaceId, activeId }: { workspaceId: string; activeId?
       <Menu
         label={<Plus size={13} />}
         align="left"
+        empty="No agents enabled"
         items={[
           ...featured.map((l) => ({
             label: `${modelName(l.agent, findModel(catalogs, l.agent, l.model), l.model)} · ${effortName(catalogs, l.agent, l.effort)}`,
