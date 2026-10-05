@@ -50,6 +50,7 @@ jobs:
           echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/keys/AuthKey.p8" >> "$GITHUB_ENV"
 
       - uses: tauri-apps/tauri-action@v0
+        id: tauri
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Updater signature (minisign), checked by installed apps.
@@ -71,3 +72,16 @@ jobs:
           prerelease: false
           includeUpdaterJson: true
           args: --target universal-apple-darwin --config src-tauri/tauri.release.conf.json
+
+      # Unversioned copy of the installer, so
+      # https://github.com/steebchen/suneiro/releases/latest/download/Suneiro.dmg
+      # always serves the newest build (the website links there).
+      - name: Upload Suneiro.dmg
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACTS: ${{ steps.tauri.outputs.artifactPaths }}
+          VERSION: ${{ steps.tauri.outputs.appVersion }}
+        run: |
+          dmg=$(jq -r '.[] | select(endswith(".dmg"))' <<<"$ARTIFACTS" | head -n1)
+          cp "$dmg" "$RUNNER_TEMP/Suneiro.dmg"
+          gh release upload "v$VERSION" "$RUNNER_TEMP/Suneiro.dmg" --clobber

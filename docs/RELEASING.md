@@ -3,6 +3,7 @@
 Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds a universal macOS app, signs it with the Developer ID certificate, notarizes it with Apple and publishes a GitHub release with:
 
 - `Suneiro_<version>_universal.dmg`: the installer people download
+- `Suneiro.dmg`: the same installer under a fixed name, so `https://github.com/steebchen/suneiro/releases/latest/download/Suneiro.dmg` always serves the newest version (the website's download button links there)
 - `Suneiro.app.tar.gz` + `.sig`: the update payload and its signature
 - `latest.json`: what installed apps poll
 
