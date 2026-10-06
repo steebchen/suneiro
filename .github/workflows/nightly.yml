@@ -1,0 +1,73 @@
+# Once a day, release a new minor version if main has commits since the last
+# release tag: bump the version, commit, tag, and start the release workflow.
+# (Tags pushed with GITHUB_TOKEN don't trigger `on: push`, so release.yml is
+# started explicitly.)
+name: Nightly release
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Bump and commit locally, but push nothing
+        type: boolean
+        default: false
+
+concurrency:
+  group: nightly-release
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Check for commits since the last release
+        id: check
+        run: |
+          last=$(git describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)
+          if [ -n "$last" ] && [ -z "$(git rev-list "$last..HEAD")" ]; then
+            echo "No commits since $last, nothing to release."
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          current=$(jq -r .version apps/desktop/src-tauri/tauri.conf.json)
+          IFS=. read -r major minor _ <<<"${current%%-*}"
+          next="$major.$((minor + 1)).0"
+          echo "Releasing $next (last release: ${last:-none}, version: $current)"
+          echo "release=true" >> "$GITHUB_OUTPUT"
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+
+      - if: steps.check.outputs.release == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Bump, commit and tag
+        if: steps.check.outputs.release == 'true'
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          # `pnpm bump` updates Cargo.lock offline, so fetch the crates first.
+          cargo fetch --locked
+          node scripts/bump.mjs "$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Release v$VERSION"
+          git tag "v$VERSION"
+          git show --stat HEAD
+
+      - name: Push and start the release
+        if: steps.check.outputs.release == 'true' && !inputs.dry_run
+        env:
+          VERSION: ${{ steps.check.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git push --atomic origin HEAD:main "v$VERSION"
+          gh workflow run release.yml --ref "v$VERSION"

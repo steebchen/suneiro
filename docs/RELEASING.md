@@ -16,6 +16,10 @@ git commit -am "Release v0.2.0" && git tag v0.2.0 && git push origin HEAD v0.2.0
 
 The workflow fails early if the tag and the app version differ.
 
+### Nightly releases
+
+`.github/workflows/nightly.yml` runs every day at 04:00 UTC. If `main` has commits since the latest `v*` tag, it bumps the minor version (0.2.0 → 0.3.0), commits `Release v0.3.0` to `main`, tags it and starts `release.yml` for the tag. Without new commits it does nothing. Run it by hand from the Actions tab; tick **dry_run** to see the bump without pushing anything.
+
 ## How auto-update works
 
 `apps/desktop/src-tauri/src/updater.rs` uses `tauri-plugin-updater`. Release builds fetch the endpoint in `tauri.conf.json` (`plugins.updater.endpoints`) at launch and every 4 hours. Downloads are checked against `plugins.updater.pubkey` before anything is installed.
