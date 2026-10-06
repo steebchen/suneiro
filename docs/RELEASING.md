@@ -18,7 +18,14 @@ The workflow fails early if the tag and the app version differ.
 
 ## How auto-update works
 
-`apps/desktop/src-tauri/src/updater.rs` uses `tauri-plugin-updater`. Release builds fetch the endpoint in `tauri.conf.json` (`plugins.updater.endpoints`) 10 seconds after launch and every 4 hours. If `latest.json` has a newer version, the app downloads the archive, checks its signature against `plugins.updater.pubkey`, and replaces the `.app` on disk. Nothing is asked of the user. The running app is never restarted on its own, because agents may be mid-turn: the sidebar shows **Restart to update**, and otherwise the new version starts with the next launch. **Suneiro → Check for Updates…** runs the same check on demand. Development builds never update.
+`apps/desktop/src-tauri/src/updater.rs` uses `tauri-plugin-updater`. Release builds fetch the endpoint in `tauri.conf.json` (`plugins.updater.endpoints`) at launch and every 4 hours. Downloads are checked against `plugins.updater.pubkey` before anything is installed.
+
+- **At launch:** if `latest.json` has a newer version and it downloads within 20 seconds while no agent or workspace is busy, the app installs it and restarts right away. A toast shows the progress and offers **Not now**.
+- **Otherwise:** a toast offers the update with **Dismiss**, **Restart now** and **Restart when idle**. Nothing is installed until the user picks a restart option. "Restart when idle" downloads the update, waits until no agent is mid-turn and no workspace is being set up or archived (`Core::activity()`), then installs and restarts.
+
+**Suneiro → Check for Updates…** runs the check on demand and brings back a dismissed toast. Development builds never update.
+
+Versions up to 0.1.0 used an older updater that installed new versions silently and only asked about the restart, so they will install the next release that way.
 
 The endpoint must be readable without credentials. `https://github.com/<owner>/<repo>/releases/latest/download/latest.json` only works for a public repository; for a private one, publish releases to a public repository or a bucket and change the endpoint.
 
