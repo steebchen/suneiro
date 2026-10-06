@@ -91,6 +91,14 @@ export type ConfigOption = {
   options?: SelectOption[] | { group: string; name: string; options: SelectOption[] }[];
 };
 
+/** Update state from the Tauri layer ("update" event). */
+export type UpdateStatus = {
+  version: string | null;
+  phase: "none" | "available" | "downloading" | "waiting" | "installing";
+  /** what "restart when idle" is waiting for */
+  activity: { agents: number; workspaces: number };
+};
+
 export type Branch = { name: string; remote: boolean; updatedAt: number; subject: string };
 export type OpenPr = {
   number: number;
@@ -243,10 +251,13 @@ export const api = {
   terminalKill: (terminalId: string) => invoke<void>("terminal_kill", { terminalId }),
   getSettings: () => invoke<Settings>("get_settings"),
   saveSettings: (settings: Settings) => invoke<void>("save_settings", { settings }),
-  /** Install the latest version if there is one; resolves to the version waiting for a restart. */
-  checkForUpdates: () => invoke<string | null>("check_for_updates"),
-  updateReady: () => invoke<string | null>("update_ready"),
-  restartApp: () => invoke<void>("restart_app"),
+  /** Look for a newer version; nothing is installed until `installUpdate`. */
+  checkForUpdates: () => invoke<UpdateStatus>("check_for_updates"),
+  updateStatus: () => invoke<UpdateStatus>("update_status"),
+  /** Download, install and restart: now, or once no agent or workspace is busy. */
+  installUpdate: (whenIdle: boolean) => invoke<void>("install_update", { whenIdle }),
+  /** Stop waiting for work to finish before updating. */
+  cancelUpdate: () => invoke<void>("cancel_update"),
   detectAgents: () => invoke<AgentStatus[]>("detect_agents"),
   setupTerminalOpen: (terminalId: string, cols: number, rows: number, command: string, onData: (d: Uint8Array) => void, onExit: () => void) => {
     const dataChannel = new Channel<ArrayBuffer>();

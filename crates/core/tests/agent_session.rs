@@ -202,8 +202,10 @@ async fn fake_core(no_steer: bool) -> (Arc<Core>, Arc<Mutex<Vec<Event>>>, String
 #[tokio::test]
 async fn steering_injects_into_the_running_turn() {
     let (core, log, sid, _tmp) = fake_core(false).await;
+    assert!(core.activity().is_idle());
     // Idle: steering is just a prompt.
     core.agents.prompt(&sid, "slow one".into()).unwrap();
+    assert_eq!(core.activity(), suneiro_core::Activity { agents: 1, workspaces: 1 });
     wait_for(&log, "turn running", |e| {
         matches!(e, Event::SessionUpdate { update, .. } if update["content"]["text"] == "working on slow one")
     })
@@ -215,6 +217,7 @@ async fn steering_injects_into_the_running_turn() {
     .await;
     assert!(core.agents.is_running(&sid), "steering doesn't stop the turn");
     wait_for(&log, "turn end", |e| matches!(e, Event::TurnEnd { stop_reason, .. } if stop_reason == "end_turn")).await;
+    assert!(core.activity().is_idle(), "a finished turn is no longer active");
     assert_eq!(core.agents.steer(&sid, "slow two".into()).await.unwrap(), "sent");
     core.shutdown();
 }

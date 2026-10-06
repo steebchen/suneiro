@@ -602,8 +602,9 @@ pub fn run() {
             detect_agents,
             setup_terminal_open,
             updater::check_for_updates,
-            updater::update_ready,
-            updater::restart_app,
+            updater::update_status,
+            updater::install_update,
+            updater::cancel_update,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

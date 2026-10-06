@@ -8,7 +8,7 @@ export function Toast() {
     <div
       onClick={() => useStore.setState({ toast: null })}
       className={clsx(
-        "selectable fixed right-4 bottom-4 z-50 max-w-md rounded-lg border px-3 py-2 whitespace-pre-wrap shadow-lg",
+        "selectable max-w-md rounded-lg border px-3 py-2 whitespace-pre-wrap shadow-lg",
         toast.kind === "error" ? "border-del-fg/40 bg-elevated text-del-fg" : "border-border bg-elevated text-fg",
       )}
     >

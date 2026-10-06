@@ -1,7 +1,6 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
-import { ask } from "@tauri-apps/plugin-dialog";
 import {
   Archive,
   ChartColumn,
@@ -27,7 +26,7 @@ import { checkSummary, prAppearance } from "../lib/pr";
 import { useResizable } from "../lib/resize";
 import { ResizeHandle } from "./ResizeHandle";
 import { actions, formatCost, useStore, workspaceActivity } from "../lib/store";
-import { api, type PrStatus, type Repo, type Workspace } from "../lib/api";
+import { type PrStatus, type Repo, type Workspace } from "../lib/api";
 import { BrandMark } from "./BrandMark";
 import { AddRepoMenu } from "./AddRepoMenu";
 import { openRepoSettings } from "./RepoSettings";
@@ -166,24 +165,23 @@ export function Sidebar() {
   );
 }
 
-/** Shown once a new version is installed; it starts with the next launch. */
+/** Brings back a dismissed update toast, or shows that one is queued. */
 function UpdateButton() {
-  const version = useStore((s) => s.updateReady);
-  if (!version) return null;
-  const restart = async () => {
-    const s = useStore.getState();
-    const running = s.workspaces.some((w) => workspaceActivity(s, w.id) === "running");
-    if (running && !(await ask("Agents are still working. Restarting stops them; you can continue the chats afterwards.", { title: `Restart to update to ${version}?`, okLabel: "Restart" }))) return;
-    void api.restartApp();
-  };
+  const update = useStore((s) => s.update);
+  const dismissed = useStore((s) => s.updateDismissed);
+  if (!update?.version || update.phase === "none") return null;
+  // The toast is showing; no need for a second prompt.
+  if (update.phase === "available" && dismissed !== update.version) return null;
+  const queued = update.phase !== "available";
   return (
     <button
-      onClick={() => void restart()}
-      title={`Suneiro ${version} is installed. Restart to use it.`}
-      className="mb-1 flex w-full items-center gap-2 rounded-md bg-accent px-2 py-1.5 font-medium text-accent-fg"
+      onClick={() => useStore.setState({ updateDismissed: null })}
+      disabled={queued}
+      title={queued ? `Suneiro ${update.version} installs once agents finish` : `Suneiro ${update.version} is available`}
+      className="mb-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-accent hover:bg-hover disabled:hover:bg-transparent"
     >
-      <Download size={14} /> Restart to update
-      <span className="ml-auto text-[10px] opacity-80">{version}</span>
+      <Download size={14} /> {queued ? "Update queued" : "Update available"}
+      <span className="ml-auto text-[10px] opacity-80">{update.version}</span>
     </button>
   );
 }

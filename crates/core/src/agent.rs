@@ -921,6 +921,16 @@ impl Agents {
         Ok(())
     }
 
+    /// Workspace of every chat in the middle of a turn, one entry per chat.
+    pub fn running_workspaces(&self) -> Vec<String> {
+        self.sessions
+            .lock()
+            .values()
+            .filter(|s| s.running.load(Ordering::SeqCst))
+            .map(|s| s.workspace_id.clone())
+            .collect()
+    }
+
     pub fn is_running(&self, session_id: &str) -> bool {
         self.sessions
             .lock()

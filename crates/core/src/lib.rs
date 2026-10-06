@@ -41,6 +41,46 @@ fn archive_marker(workspace_id: &str) -> String {
     format!("runner-archive:{workspace_id}")
 }
 
+/// Work in progress that a restart would interrupt (e.g. to install an update).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct Activity {
+    /// Chats in the middle of a turn (including ones waiting for an answer).
+    pub agents: usize,
+    /// Workspaces with a running agent, or being set up or archived.
+    pub workspaces: usize,
+}
+
+impl Activity {
+    pub fn is_idle(&self) -> bool {
+        self.agents == 0 && self.workspaces == 0
+    }
+}
+
+/// Marks a workspace busy (setup or archive script, worktree changes) until dropped.
+struct WorkspaceJob {
+    jobs: Arc<parking_lot::Mutex<std::collections::HashMap<String, usize>>>,
+    workspace_id: String,
+}
+
+impl WorkspaceJob {
+    fn start(jobs: &Arc<parking_lot::Mutex<std::collections::HashMap<String, usize>>>, workspace_id: &str) -> Self {
+        *jobs.lock().entry(workspace_id.to_string()).or_default() += 1;
+        Self { jobs: jobs.clone(), workspace_id: workspace_id.to_string() }
+    }
+}
+
+impl Drop for WorkspaceJob {
+    fn drop(&mut self) {
+        let mut jobs = self.jobs.lock();
+        if let Some(n) = jobs.get_mut(&self.workspace_id) {
+            *n -= 1;
+            if *n == 0 {
+                jobs.remove(&self.workspace_id);
+            }
+        }
+    }
+}
+
 /// Persists transcript events, then forwards everything to the UI sink.
 #[derive(Clone)]
 pub struct Emitter {
@@ -70,6 +110,8 @@ pub struct Core {
     pr_refresh: tokio::sync::Notify,
     /// When each repo's base branch was last fetched, to fetch at most once a minute.
     fetched: parking_lot::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    /// Workspaces with a setup/archive in progress (count per workspace).
+    jobs: Arc<parking_lot::Mutex<std::collections::HashMap<String, usize>>>,
 }
 
 impl Core {
@@ -90,7 +132,17 @@ impl Core {
             prs: Default::default(),
             pr_refresh: tokio::sync::Notify::new(),
             fetched: Default::default(),
+            jobs: Default::default(),
         }))
+    }
+
+    /// What a restart would interrupt right now.
+    pub fn activity(&self) -> Activity {
+        let mut workspaces: std::collections::HashSet<String> = self.jobs.lock().keys().cloned().collect();
+        let running = self.agents.running_workspaces();
+        let agents = running.len();
+        workspaces.extend(running);
+        Activity { agents, workspaces: workspaces.len() }
     }
 
     pub fn shutdown(&self) {
@@ -258,7 +310,9 @@ impl Core {
     /// Create (or re-create) the worktree in the background, then run setup.
     fn spawn_worktree_setup(self: &Arc<Self>, ws: Workspace, repo: Repo, new_branch: bool) {
         let this = self.clone();
+        let job = WorkspaceJob::start(&self.jobs, &ws.id);
         tokio::spawn(async move {
+            let _job = job;
             let repo_path = PathBuf::from(&repo.path);
             let status = match this.prepare_worktree(&ws, &repo_path, new_branch).await {
                 Ok(Some(setup)) => {
@@ -381,6 +435,7 @@ impl Core {
     pub async fn archive_workspace(&self, workspace_id: &str) -> Result<()> {
         let ws = self.store.workspace(workspace_id)?;
         let repo = self.store.repo(&ws.repo_id)?;
+        let _job = WorkspaceJob::start(&self.jobs, &ws.id);
         for s in self.store.sessions(&ws.id)? {
             self.agents.close(&s.id);
         }

@@ -36,6 +36,7 @@ async fn create_archive_restore() {
     let r = core.add_repo(&repo.to_string_lossy()).await.unwrap();
     let ws = core.create_workspace(&r.id).await.unwrap();
     assert_eq!(ws.status, "creating", "creation returns before the worktree exists");
+    assert_eq!(core.activity().workspaces, 1, "a workspace being set up counts as active");
     wait_status(&core, &ws.id, "ready").await;
 
     // Commit work on the workspace branch, then archive.

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api, type ChangedFile, type AgentDef, type AgentStatus, type Catalog, type LoadoutEntry, type ModelPrice, type PrStatus, type Settings, type Usage, type ConfigOption, type CoreEvent, type PermissionOption, type Repo, type Session, type Workspace } from "./api";
+import { api, type ChangedFile, type AgentDef, type AgentStatus, type Catalog, type LoadoutEntry, type ModelPrice, type PrStatus, type Settings, type Usage, type UpdateStatus, type ConfigOption, type CoreEvent, type PermissionOption, type Repo, type Session, type Workspace } from "./api";
 import { applyEvents, emptyTranscript, type Transcript } from "./transcript";
 
 export type Permission = { requestId: string; toolCall: any; options: PermissionOption[] };
@@ -88,8 +88,10 @@ type State = {
   pricing: Record<string, ModelPrice>;
   /** repos recently used with coding agents, for "Add repository" */
   recents: { path: string; name: string; lastUsed: number }[];
-  /** version already installed on disk, running after a restart */
-  updateReady: string | null;
+  /** newer app version and how far installing it got */
+  update: UpdateStatus | null;
+  /** version whose update toast the user dismissed (until the next launch) */
+  updateDismissed: string | null;
 };
 
 export const useStore = create<State>(() => ({
@@ -116,7 +118,8 @@ export const useStore = create<State>(() => ({
   recents: [],
   usage: [],
   pricing: {},
-  updateReady: null,
+  update: null,
+  updateDismissed: null,
 }));
 
 const set = useStore.setState;
@@ -319,7 +322,7 @@ export const actions = {
     void actions.detectAgents().then(() => actions.ensureCatalogs());
     void actions.loadRecents();
     void actions.loadUsage();
-    void api.updateReady().then((v) => v && set({ updateReady: v })).catch(() => {});
+    void api.updateStatus().then((update) => set({ update })).catch(() => {});
     const lists = await Promise.all(workspaces.map((w) => api.listSessions(w.id)));
     const sessions: Record<string, Session[]> = {};
     const selectedSession: Record<string, string> = {};

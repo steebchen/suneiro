@@ -11,6 +11,8 @@ import { BrandMark } from "./components/BrandMark";
 import { Sidebar } from "./components/Sidebar";
 import { WorkspaceView } from "./components/WorkspaceView";
 import { Toast } from "./components/Toast";
+import { UpdateToast } from "./components/UpdateToast";
+import type { UpdateStatus } from "./lib/api";
 import { AgentSetup, Settings } from "./components/Settings";
 import { Home } from "./components/Home";
 import { Insights } from "./components/Insights";
@@ -35,8 +37,12 @@ function runCommand(id: string, setPalette: Toggle, setShortcuts?: Toggle) {
       toast("Checking for updates…", "info");
       return void api
         .checkForUpdates()
-        .then((v) => (v ? useStore.setState({ updateReady: v }) : toast("Suneiro is up to date", "info")))
-        .catch((e) => toast(`Update failed: ${e}`));
+        .then((update) => {
+          // Asking again brings back a dismissed update.
+          useStore.setState({ update, updateDismissed: null });
+          if (!update.version) toast("Suneiro is up to date", "info");
+        })
+        .catch((e) => toast(`Update check failed: ${e}`));
     case "palette":
       return setPalette((o) => !o);
     case "shortcuts":
@@ -93,7 +99,7 @@ export function App() {
       .then((u) => (unlisten = u))
       .catch(() => {});
     let unlistenUpdate: (() => void) | undefined;
-    listen<string>("update-ready", (e) => useStore.setState({ updateReady: e.payload }))
+    listen<UpdateStatus>("update", (e) => useStore.setState({ update: e.payload }))
       .then((u) => (unlistenUpdate = u))
       .catch(() => {});
     return () => {
@@ -182,7 +188,10 @@ export function App() {
           </div>
         )}
       </main>
-      <Toast />
+      <div className="fixed right-4 bottom-4 z-50 flex flex-col items-end gap-2">
+        <UpdateToast />
+        <Toast />
+      </div>
       {palette && <CommandPalette onClose={() => setPalette(false)} onShortcuts={() => setShortcuts(true)} />}
       {shortcuts && <Shortcuts onClose={() => setShortcuts(false)} />}
       {newFromRepo && <NewWorkspaceDialog repoId={newFromRepo} onClose={() => actions.openNewFrom(null)} />}

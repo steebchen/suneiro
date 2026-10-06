@@ -1,24 +1,71 @@
-//! Silent auto-update. Release builds check the endpoint in `tauri.conf.json`
-//! shortly after launch and every few hours, then download and install the new
-//! version in the background. The running app is never restarted on its own
-//! (agents may be mid-turn): the UI gets an "update-ready" event and offers a
-//! restart, and otherwise the new version starts with the next launch.
+//! Updates that only install when the user says so. Release builds check the
+//! endpoint in `tauri.conf.json` shortly after launch and every few hours, and
+//! report a newer version as an "update" event. Nothing is installed until the
+//! user picks "Restart now" or "Restart when idle"; the latter downloads the
+//! update, waits until no agent is mid-turn and no workspace is being set up
+//! or archived, and only then installs it and restarts.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::Mutex;
+use serde::Serialize;
+use suneiro_core::Activity;
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_updater::UpdaterExt;
+use tauri_plugin_updater::{Update, UpdaterExt};
 
 const FIRST_CHECK: Duration = Duration::from_secs(10);
 const INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
+const IDLE_POLL: Duration = Duration::from_millis(1500);
+/// Consecutive idle polls before restarting, so a message queued right after
+/// a turn ends gets to start instead of being cut off.
+const IDLE_POLLS: u32 = 3;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Status {
+    /// Newer version that can be installed, if any.
+    version: Option<String>,
+    /// "none", "available", "downloading", "waiting" (for work to finish) or "installing".
+    phase: &'static str,
+    /// What the update is waiting for while "waiting".
+    activity: Activity,
+    /// Bumped whenever the user confirms or cancels, so a stale install
+    /// (e.g. one still waiting for agents) knows to stop.
+    #[serde(skip)]
+    generation: u64,
+}
+
+impl Default for Status {
+    fn default() -> Self {
+        Self { version: None, phase: "none", activity: Activity::default(), generation: 0 }
+    }
+}
 
 #[derive(Default)]
 pub struct Updates {
-    /// Version that is installed on disk and waiting for a restart.
-    ready: Mutex<Option<String>>,
-    /// Held while checking, so the timer and the menu item never download twice.
+    update: Mutex<Option<Update>>,
+    /// Downloaded but not installed yet: (version, bytes).
+    downloaded: Mutex<Option<(String, Arc<Vec<u8>>)>>,
+    status: Mutex<Status>,
+    /// Held while checking, so the timer and the menu item never race.
     busy: tokio::sync::Mutex<()>,
+}
+
+/// Update the status and tell the UI. With `generation`, only if no newer
+/// confirm/cancel happened since; returns whether it applied.
+fn set_status(app: &AppHandle, generation: Option<u64>, f: impl FnOnce(&mut Status)) -> bool {
+    let updates = app.state::<Updates>();
+    let status = {
+        let mut s = updates.status.lock();
+        if generation.is_some_and(|g| g != s.generation) {
+            return false;
+        }
+        f(&mut s);
+        s.clone()
+    };
+    let _ = app.emit("update", &status);
+    true
 }
 
 /// Start the background checks. Development builds never update themselves.
@@ -38,42 +85,117 @@ pub fn start(app: &AppHandle) {
     });
 }
 
-/// Download and install the latest version if it is newer than the running
-/// one. Returns the version waiting for a restart, if any.
-async fn check(app: &AppHandle) -> Result<Option<String>, String> {
+/// Look for a newer version. Never downloads or installs anything.
+async fn check(app: &AppHandle) -> Result<Status, String> {
     let updates = app.state::<Updates>();
     let _busy = updates.busy.lock().await;
-    let updater = app.updater().map_err(|e| e.to_string())?;
-    let Some(update) = updater.check().await.map_err(|e| e.to_string())? else {
-        return Ok(updates.ready.lock().clone());
-    };
-    if updates.ready.lock().as_deref() == Some(update.version.as_str()) {
-        return Ok(Some(update.version));
+    {
+        let s = updates.status.lock();
+        if !matches!(s.phase, "none" | "available") {
+            // The user already chose to update; don't swap the version under them.
+            return Ok(s.clone());
+        }
     }
-    update.download_and_install(|_, _| {}, || {}).await.map_err(|e| e.to_string())?;
-    *updates.ready.lock() = Some(update.version.clone());
-    let _ = app.emit("update-ready", &update.version);
-    Ok(Some(update.version))
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let update = updater.check().await.map_err(|e| e.to_string())?;
+    let version = update.as_ref().map(|u| u.version.clone());
+    *updates.update.lock() = update;
+    set_status(app, None, |s| {
+        if matches!(s.phase, "none" | "available") {
+            s.phase = if version.is_some() { "available" } else { "none" };
+            s.version = version;
+        }
+    });
+    let status = updates.status.lock().clone();
+    Ok(status)
 }
 
-/// "Check for Updates…": the version waiting for a restart, or `None` when
-/// the app is up to date.
+/// "Check for Updates…": the current update status after a fresh check.
 #[tauri::command]
-pub async fn check_for_updates(app: AppHandle) -> Result<Option<String>, String> {
+pub async fn check_for_updates(app: AppHandle) -> Result<Status, String> {
     if cfg!(debug_assertions) {
         return Err("Updates are disabled in development builds".into());
     }
     check(&app).await
 }
 
-/// The installed-but-not-running version, for a UI that missed the event.
+/// Current status, for a UI that missed the event.
 #[tauri::command]
-pub fn update_ready(updates: tauri::State<'_, Updates>) -> Option<String> {
-    updates.ready.lock().clone()
+pub fn update_status(updates: tauri::State<'_, Updates>) -> Status {
+    updates.status.lock().clone()
 }
 
-/// Restart into the installed update (runs the normal exit path first).
+/// The user confirmed: download the update, then install it and restart,
+/// either right away or once nothing is running anymore.
 #[tauri::command]
-pub fn restart_app(app: AppHandle) {
+pub async fn install_update(app: AppHandle, when_idle: bool) -> Result<(), String> {
+    let mut generation = 0;
+    set_status(&app, None, |s| {
+        s.generation += 1;
+        generation = s.generation;
+    });
+    let result = install(&app, when_idle, generation).await;
+    if result.is_err() {
+        set_status(&app, Some(generation), |s| {
+            s.phase = if s.version.is_some() { "available" } else { "none" };
+            s.activity = Activity::default();
+        });
+    }
+    result
+}
+
+async fn install(app: &AppHandle, when_idle: bool, generation: u64) -> Result<(), String> {
+    let updates = app.state::<Updates>();
+    let update = updates.update.lock().clone().ok_or("No update available")?;
+
+    let cached = updates.downloaded.lock().clone().filter(|(v, _)| *v == update.version);
+    let bytes = match cached {
+        Some((_, bytes)) => bytes,
+        None => {
+            set_status(app, Some(generation), |s| s.phase = "downloading");
+            let bytes = Arc::new(update.download(|_, _| {}, || {}).await.map_err(|e| e.to_string())?);
+            *updates.downloaded.lock() = Some((update.version.clone(), bytes.clone()));
+            bytes
+        }
+    };
+
+    if when_idle {
+        let core = app.state::<crate::App>().core.clone();
+        let mut idle_polls = 0;
+        loop {
+            let activity = core.activity();
+            idle_polls = if activity.is_idle() { idle_polls + 1 } else { 0 };
+            if idle_polls >= IDLE_POLLS {
+                break;
+            }
+            let current = set_status(app, Some(generation), |s| {
+                s.phase = "waiting";
+                s.activity = activity;
+            });
+            if !current {
+                return Ok(()); // cancelled, or "Restart now" took over
+            }
+            tokio::time::sleep(IDLE_POLL).await;
+        }
+    }
+
+    if !set_status(app, Some(generation), |s| s.phase = "installing") {
+        return Ok(());
+    }
+    update.install(bytes.as_slice()).map_err(|e| e.to_string())?;
     app.request_restart();
+    Ok(())
+}
+
+/// Stop waiting for work to finish; the update stays available.
+#[tauri::command]
+pub fn cancel_update(app: AppHandle) {
+    set_status(&app, None, |s| {
+        if s.phase == "installing" {
+            return;
+        }
+        s.generation += 1;
+        s.phase = if s.version.is_some() { "available" } else { "none" };
+        s.activity = Activity::default();
+    });
 }

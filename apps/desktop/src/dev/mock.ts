@@ -15,6 +15,12 @@ function send(ch: Channel, message: any) {
 
 let events: Channel | null = null;
 const emit = (...batch: any[]) => events && send(events, batch);
+// `?update` in the URL pretends a new version is available.
+let updateStatus: any = new URLSearchParams(location.search).has("update")
+  ? { version: "0.2.0", phase: "available", activity: { agents: 0, workspaces: 0 } }
+  : { version: null, phase: "none", activity: { agents: 0, workspaces: 0 } };
+let updateListener = 0;
+const mockUpdateEvent = () => callbacks.get(updateListener)?.({ event: "update", id: 0, payload: updateStatus });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const repos = [
@@ -329,10 +335,21 @@ const handlers: Record<string, (a: any) => any> = {
   usage: () => usageRows(),
   get_pricing: () => pricing,
   save_pricing: (a) => void (pricing = a.pricing),
-  check_for_updates: () => null,
-  update_ready: () => (new URLSearchParams(location.search).has("update") ? "0.2.0" : null),
-  restart_app: () => location.reload(),
-  "plugin:event|listen": () => 0,
+  check_for_updates: () => updateStatus,
+  update_status: () => updateStatus,
+  install_update: (a) => {
+    updateStatus = { ...updateStatus, phase: a.whenIdle ? "waiting" : "installing", activity: { agents: 1, workspaces: 1 } };
+    mockUpdateEvent();
+    if (!a.whenIdle) setTimeout(() => location.reload(), 1500);
+  },
+  cancel_update: () => {
+    updateStatus = { ...updateStatus, phase: "available", activity: { agents: 0, workspaces: 0 } };
+    mockUpdateEvent();
+  },
+  "plugin:event|listen": (a) => {
+    if (a.event === "update") updateListener = a.handler;
+    return a.handler;
+  },
   "plugin:event|unlisten": () => {},
   connect_session: () => {},
   recent_projects: () => [
