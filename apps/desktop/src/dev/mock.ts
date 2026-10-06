@@ -15,10 +15,12 @@ function send(ch: Channel, message: any) {
 
 let events: Channel | null = null;
 const emit = (...batch: any[]) => events && send(events, batch);
-// `?update` in the URL pretends a new version is available.
-let updateStatus: any = new URLSearchParams(location.search).has("update")
-  ? { version: "0.2.0", phase: "available", activity: { agents: 0, workspaces: 0 } }
-  : { version: null, phase: "none", activity: { agents: 0, workspaces: 0 } };
+// `?update` in the URL pretends a new version is available; `?update=launch`
+// that it's installing on its own at launch.
+const updateParam = new URLSearchParams(location.search).get("update");
+let updateStatus: any = updateParam !== null
+  ? { version: "0.2.0", phase: updateParam === "launch" ? "downloading" : "available", activity: { agents: 0, workspaces: 0 }, automatic: updateParam === "launch" }
+  : { version: null, phase: "none", activity: { agents: 0, workspaces: 0 }, automatic: false };
 let updateListener = 0;
 const mockUpdateEvent = () => callbacks.get(updateListener)?.({ event: "update", id: 0, payload: updateStatus });
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -343,7 +345,7 @@ const handlers: Record<string, (a: any) => any> = {
     if (!a.whenIdle) setTimeout(() => location.reload(), 1500);
   },
   cancel_update: () => {
-    updateStatus = { ...updateStatus, phase: "available", activity: { agents: 0, workspaces: 0 } };
+    updateStatus = { ...updateStatus, phase: "available", activity: { agents: 0, workspaces: 0 }, automatic: false };
     mockUpdateEvent();
   },
   "plugin:event|listen": (a) => {

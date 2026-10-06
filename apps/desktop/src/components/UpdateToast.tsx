@@ -37,6 +37,24 @@ export function UpdateToast() {
   const { version, phase } = update;
   if (phase === "available" && dismissed === version) return null;
 
+  if (update.automatic) {
+    return (
+      <div className="w-80 rounded-lg border border-border bg-elevated p-3 shadow-lg">
+        <div className="flex items-center gap-2 font-medium">
+          <Loader2 size={14} className="animate-spin text-muted" /> Updating Suneiro to {version}…
+        </div>
+        <p className="mt-1 text-muted">Suneiro restarts in a moment.</p>
+        {phase === "downloading" && (
+          <div className="mt-3 flex justify-end">
+            <button className="rounded-md px-2 py-1 hover:bg-hover" onClick={() => void api.cancelUpdate()}>
+              Not now
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   const button = "rounded-md px-2 py-1 hover:bg-hover";
   const primary = "rounded-md bg-accent px-2 py-1 font-medium text-accent-fg";
   return (

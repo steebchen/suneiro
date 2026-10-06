@@ -1,12 +1,14 @@
-//! Updates that only install when the user says so. Release builds check the
-//! endpoint in `tauri.conf.json` shortly after launch and every few hours, and
-//! report a newer version as an "update" event. Nothing is installed until the
-//! user picks "Restart now" or "Restart when idle"; the latter downloads the
-//! update, waits until no agent is mid-turn and no workspace is being set up
-//! or archived, and only then installs it and restarts.
+//! Updates that never interrupt work. Release builds check the endpoint in
+//! `tauri.conf.json` at launch and every few hours, and report the state as an
+//! "update" event. An update found right at launch installs and restarts on
+//! its own, as long as it's ready within `STARTUP_WINDOW` and nothing has
+//! started yet (the UI offers "Not now"). Otherwise nothing is installed until
+//! the user picks "Restart now" or "Restart when idle"; the latter downloads
+//! the update, waits until no agent is mid-turn and no workspace is being set
+//! up or archived, and only then installs it and restarts.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -14,7 +16,9 @@ use suneiro_core::Activity;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
-const FIRST_CHECK: Duration = Duration::from_secs(10);
+/// How long after launch an update may still install without asking. Short,
+/// because composer drafts don't survive a restart.
+const STARTUP_WINDOW: Duration = Duration::from_secs(20);
 const INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
 const IDLE_POLL: Duration = Duration::from_millis(1500);
 /// Consecutive idle polls before restarting, so a message queued right after
@@ -30,6 +34,8 @@ pub struct Status {
     phase: &'static str,
     /// What the update is waiting for while "waiting".
     activity: Activity,
+    /// Installing on its own at launch (the user didn't ask for it).
+    automatic: bool,
     /// Bumped whenever the user confirms or cancels, so a stale install
     /// (e.g. one still waiting for agents) knows to stop.
     #[serde(skip)]
@@ -38,7 +44,7 @@ pub struct Status {
 
 impl Default for Status {
     fn default() -> Self {
-        Self { version: None, phase: "none", activity: Activity::default(), generation: 0 }
+        Self { version: None, phase: "none", activity: Activity::default(), automatic: false, generation: 0 }
     }
 }
 
@@ -74,15 +80,35 @@ pub fn start(app: &AppHandle) {
         return;
     }
     let app = app.clone();
+    let launched = Instant::now();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(FIRST_CHECK).await;
+        match check(&app).await {
+            Ok(status) if status.version.is_some() => {
+                if let Err(e) = run(&app, Mode::Startup(launched + STARTUP_WINDOW)).await {
+                    log::warn!("update at launch failed: {e}");
+                }
+            }
+            Ok(_) => {}
+            Err(e) => log::warn!("update check failed: {e}"),
+        }
         loop {
+            tokio::time::sleep(INTERVAL).await;
             if let Err(e) = check(&app).await {
                 log::warn!("update check failed: {e}");
             }
-            tokio::time::sleep(INTERVAL).await;
         }
     });
+}
+
+#[derive(Clone, Copy)]
+enum Mode {
+    /// Restart right away.
+    Now,
+    /// Restart once nothing is running.
+    WhenIdle,
+    /// Unasked, at launch: restart only if ready before the deadline and
+    /// nothing has started; otherwise leave it to the user.
+    Startup(Instant),
 }
 
 /// Look for a newer version. Never downloads or installs anything.
@@ -129,22 +155,31 @@ pub fn update_status(updates: tauri::State<'_, Updates>) -> Status {
 /// either right away or once nothing is running anymore.
 #[tauri::command]
 pub async fn install_update(app: AppHandle, when_idle: bool) -> Result<(), String> {
-    let mut generation = 0;
-    set_status(&app, None, |s| {
-        s.generation += 1;
-        generation = s.generation;
-    });
-    let result = install(&app, when_idle, generation).await;
-    if result.is_err() {
-        set_status(&app, Some(generation), |s| {
-            s.phase = if s.version.is_some() { "available" } else { "none" };
-            s.activity = Activity::default();
-        });
-    }
-    result
+    run(&app, if when_idle { Mode::WhenIdle } else { Mode::Now }).await
 }
 
-async fn install(app: &AppHandle, when_idle: bool, generation: u64) -> Result<(), String> {
+async fn run(app: &AppHandle, mode: Mode) -> Result<(), String> {
+    let mut generation = 0;
+    set_status(app, None, |s| {
+        s.generation += 1;
+        generation = s.generation;
+        s.automatic = matches!(mode, Mode::Startup(_));
+    });
+    let result = install(app, mode, generation).await;
+    if !matches!(result, Ok(true)) {
+        // Failed, or the launch window passed: back to asking the user.
+        set_status(app, Some(generation), |s| {
+            s.phase = if s.version.is_some() { "available" } else { "none" };
+            s.activity = Activity::default();
+            s.automatic = false;
+        });
+    }
+    result.map(|_| ())
+}
+
+/// Returns `false` when the user should be offered the update again (the
+/// launch window passed); cancelling already resets the status itself.
+async fn install(app: &AppHandle, mode: Mode, generation: u64) -> Result<bool, String> {
     let updates = app.state::<Updates>();
     let update = updates.update.lock().clone().ok_or("No update available")?;
 
@@ -159,8 +194,13 @@ async fn install(app: &AppHandle, when_idle: bool, generation: u64) -> Result<()
         }
     };
 
-    if when_idle {
-        let core = app.state::<crate::App>().core.clone();
+    let core = app.state::<crate::App>().core.clone();
+    if let Mode::Startup(deadline) = mode {
+        if Instant::now() > deadline || !core.activity().is_idle() {
+            return Ok(false);
+        }
+    }
+    if let Mode::WhenIdle = mode {
         let mut idle_polls = 0;
         loop {
             let activity = core.activity();
@@ -173,18 +213,18 @@ async fn install(app: &AppHandle, when_idle: bool, generation: u64) -> Result<()
                 s.activity = activity;
             });
             if !current {
-                return Ok(()); // cancelled, or "Restart now" took over
+                return Ok(true); // cancelled, or "Restart now" took over
             }
             tokio::time::sleep(IDLE_POLL).await;
         }
     }
 
     if !set_status(app, Some(generation), |s| s.phase = "installing") {
-        return Ok(());
+        return Ok(true); // cancelled
     }
     update.install(bytes.as_slice()).map_err(|e| e.to_string())?;
     app.request_restart();
-    Ok(())
+    Ok(true)
 }
 
 /// Stop waiting for work to finish; the update stays available.
@@ -197,5 +237,6 @@ pub fn cancel_update(app: AppHandle) {
         s.generation += 1;
         s.phase = if s.version.is_some() { "available" } else { "none" };
         s.activity = Activity::default();
+        s.automatic = false;
     });
 }

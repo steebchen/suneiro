@@ -97,6 +97,8 @@ export type UpdateStatus = {
   phase: "none" | "available" | "downloading" | "waiting" | "installing";
   /** what "restart when idle" is waiting for */
   activity: { agents: number; workspaces: number };
+  /** installing on its own right after launch, without being asked */
+  automatic: boolean;
 };
 
 export type Branch = { name: string; remote: boolean; updatedAt: number; subject: string };
