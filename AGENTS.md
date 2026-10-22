@@ -49,12 +49,23 @@ apps/desktop/src/         React 19 UI
   lib/api.ts              Typed wrappers for every Tauri command + event types
   lib/store.ts            zustand store; handleEvents folds core events per frame
   lib/transcript.ts       Pure reducer: ACP updates -> transcript items
+  lib/questions.ts        Normalizes agent question schemas for QuestionCard
+  lib/mentions.ts         @-mention file lookup in the composer
+  lib/diff.ts, highlight.ts  Line diffs + highlight.js for edit previews and diffs
+  lib/models.tsx          Agent names/icons, model label formatting
+  lib/reorder.ts, resize.ts  Pointer drag-to-reorder and panel resizing
   components/             Sidebar, Home (all workspaces, archive/restore),
-                          WorkspaceView, Chat, ChangesPanel, TerminalPanel,
-                          PrActions, PrView, SyncBadge, CommandPalette (⌘K),
-                          Insights (cost/tokens), Settings, ...
+                          WorkspaceView (chat tabs), Chat, ToolCallCard,
+                          QuestionCard, ChangesPanel, TerminalPanel, PrActions,
+                          PrView, SyncBadge, CommandPalette (⌘K), Shortcuts,
+                          AddRepoMenu (folder / clone / recents),
+                          NewWorkspaceDialog (from branch or PR), Insights
+                          (cost/tokens), UpdateToast, Settings, ModelSettings,
+                          RepoSettings, ...
   dev/mock.ts             Fake backend for running the UI in a plain browser
 scripts/                  bump.mjs (`pnpm bump`), generate-icons.mjs (`pnpm icons`)
+apps/desktop/DESIGN.md    Brand palette and UI design rules
+apps/desktop/PRODUCT.md   Product purpose, users and tone
 docs/                     RELEASING.md, README screenshots
 .github/workflows/        release.yml (signed, notarized releases on `v*` tags),
                           nightly.yml (daily minor release if main has new commits)
@@ -84,10 +95,11 @@ SUNEIRO_E2E_GH_REPO=steebchen/runner-e2e-test cargo test -p suneiro-core --test 
 - **Every spawned process uses `env::tokio_command` / `env::std_command`**, so it gets the user's login-shell PATH.
 - **Events are the only way the UI learns about changes.** Core emits `Event`s; transcript events are persisted and replayed by the same reducer (`transcript.ts`). Add new UI-visible state as an `Event` variant plus a `CoreEvent` type in `api.ts`.
 - **Agent differences live in the core.** The UI renders ACP `configOptions` generically. Agent-specific mapping (e.g. plan vs. bypass modes) goes in `agent.rs`, with unit tests.
+- **Chats:** a workspace always keeps at least one chat; the last tab has no close button and `closeSession` (also ⌘W) ignores it.
 - **Models:** the picker (`ModelPicker.tsx`) shows the user's loadout (`Settings.loadout`, first entry = default for new workspaces) and searches all Claude/Codex models plus the OpenCode models chosen in settings. New chats (+ in the tab bar, ⌘T) open directly with that default; the model is changed in the composer. Picking another agent's model opens a new chat, which replaces the current chat if it's empty. New sessions get model/effort via `Core::create_session(.., model, effort)`, applied on connect.
 - **Questions:** Suneiro advertises `elicitation.form`, so agents ask structured questions over ACP `elicitation/create` (Claude's AskUserQuestion, Codex's request_user_input). Questions are never auto-answered. `lib/questions.ts` normalizes both schema styles, `QuestionCard.tsx` walks the user through them, and the answer goes back as `{action: accept|decline|cancel, content}`. Real-agent check: `cargo run -p suneiro-core --example ask -- <repo> claude|codex`.
 - **Menus and shortcuts:** app-level shortcuts are native menu items (`install_menu` in the Tauri crate) that emit a `menu` event; `runCommand` in `App.tsx` handles them, and the same ids are used for the in-page fallbacks.
-- **Updates and releases:** a pushed `v*` tag builds, signs, notarizes and publishes a GitHub release (`.github/workflows/release.yml`, setup in `docs/RELEASING.md`). `nightly.yml` releases the next minor version daily when `main` has new commits. Release builds poll its `latest.json` at launch and every few hours (`updater.rs`, `tauri-plugin-updater`) and report a newer version as an `update` event. One found right at launch installs and restarts by itself if it's ready within 20s and nothing has started (the toast offers "Not now"); otherwise nothing is installed until the user confirms in `UpdateToast.tsx`: Dismiss, Restart now, or Restart when idle (downloads, then waits until `Core::activity()` reports no agent mid-turn and no workspace being set up or archived, then installs and restarts). Updater artifacts are only built with `tauri.release.conf.json`, so local builds need no keys.
+- **Updates and releases:** a pushed `v*` tag builds, signs, notarizes and publishes a GitHub release (`.github/workflows/release.yml`, setup in `docs/RELEASING.md`). Each release also uploads the installer as `Suneiro.dmg`, so `releases/latest/download/Suneiro.dmg` is a stable download link. `nightly.yml` releases the next minor version daily when `main` has new commits. Release builds poll its `latest.json` at launch and every few hours (`updater.rs`, `tauri-plugin-updater`) and report a newer version as an `update` event. One found right at launch installs and restarts by itself if it's ready within 20s and nothing has started (the toast offers "Not now"); otherwise nothing is installed until the user confirms in `UpdateToast.tsx`: Dismiss, Restart now, or Restart when idle (downloads, then waits until `Core::activity()` reports no agent mid-turn and no workspace being set up or archived, then installs and restarts). Updater artifacts are only built with `tauri.release.conf.json`, so local builds need no keys.
 - **Usage and cost:** every finished turn stores a `usage` row (tokens, model, cost). Claude/OpenCode report a running cost total per agent process, so a turn's cost is the difference between reports; the first report after a reconnect is compared with what's already recorded, because resumed sessions continue their old total. Codex reports tokens only; estimates are computed at read time from `Settings → Pricing`, so new prices apply retroactively. Real check: `cargo run -p suneiro-core --example usage -- <repo> claude|codex`.
 - **Images:** pasted, picked or dropped images are stored by `attachments.rs` in the app data dir; prompts carry their paths (`Agents::prompt_with`) and send ACP image blocks when the agent advertises `promptCapabilities.image` (otherwise file links). `UserMessage` events keep the paths so history shows thumbnails. Real check: `cargo run -p suneiro-core --example image -- <repo> claude|codex`.
 - **Branch names:** workspaces start on `<prefix><city>`; once the first task gets its (Haiku or heuristic) title, `Agents::name_branch` renames the branch to `<prefix><slug>` unless it was pushed (upstream set or the branch exists on origin) or `Settings.rename_branches` is off, and emits `WorkspaceBranch`.
