@@ -114,6 +114,29 @@ SUNEIRO_E2E_GH_REPO=steebchen/runner-e2e-test cargo test -p suneiro-core --test 
 - Config precedence: `suneiro.json`, `runner.json`, `conductor.json`. Scripts receive `SUNEIRO_*` plus `RUNNER_*` / `CONDUCTOR_*` aliases. Existing saved workspace roots and branch prefixes are preserved.
 - Source logo: `apps/desktop/public/suneiro-mark.svg`; `pnpm icons` regenerates desktop icons. Brand palette and usage: `apps/desktop/DESIGN.md`.
 
+## Website (`../suneiro-web`)
+
+The landing page at suneiro.com lives in a sibling repo, `../suneiro-web` (`github.com/steebchen/suneiro-web`): Next.js 16 + Tailwind v4, deployed on Vercel from `main`. When a change is user-visible, ship both sides together: app change here, matching copy or visuals there, one commit per repo.
+
+```
+src/app/page.tsx              Landing page: hero, "how it works" steps, feature grid, download section
+src/app/layout.tsx            Metadata (from lib/site.ts), fonts, theme
+src/app/opengraph-image.tsx   Generated OG image
+src/app/globals.css           Color tokens, mirrored from apps/desktop/src/styles.css
+src/components/AppWindow.tsx  Static mock of the app UI (sidebar workspaces, chat, diff)
+src/components/DownloadButton.tsx, Mark.tsx
+src/lib/site.ts               Name, URL, title/description, downloadUrl
+```
+
+- **Commands:** `pnpm install`, `pnpm dev` (http://localhost:3000), `pnpm build`, `pnpm lint`. Its own `AGENTS.md` warns that Next.js 16 differs from older versions; read `node_modules/next/dist/docs/` before writing Next code there.
+- **Keep in sync:**
+  - New or changed features → the feature list and steps in `page.tsx`, and `AppWindow.tsx` if the main UI changes noticeably.
+  - Product pitch or supported agents → `site.ts` description, `page.tsx` copy, the "What you need" requirements, and the README here.
+  - Colors or logo → `globals.css` tokens, `Mark.tsx` and `src/app/icon.svg` (from `apps/desktop/public/suneiro-mark.svg`; palette in `apps/desktop/DESIGN.md`).
+  - The download link is `site.downloadUrl` = `releases/latest/download/Suneiro.dmg`. Don't rename that asset in `release.yml`; if you have to, update the site in the same change.
+- **Tone:** copy follows `apps/desktop/PRODUCT.md`. Describe only what the released app does.
+- **Checks:** run `pnpm lint && pnpm build` in `../suneiro-web` before committing there.
+
 ## UI and performance
 
 - Never re-render the whole transcript for a streamed chunk. The reducer replaces only the changed items; rows are memoized; long lists (transcript, diffs) are virtualized.
