@@ -18,6 +18,7 @@ import { Home } from "./components/Home";
 import { Insights } from "./components/Insights";
 import { NewWorkspaceDialog } from "./components/NewWorkspaceDialog";
 import { Shortcuts } from "./components/Shortcuts";
+import { Inbox } from "./components/Inbox";
 
 export async function pickRepo() {
   const path = await open({ directory: true, title: "Choose a git repository" });
@@ -156,7 +157,9 @@ export function App() {
     <div className="flex h-full">
       <Sidebar />
       <main className="flex min-w-0 flex-1 flex-col">
-        {page === "settings" ? (
+        {page === "inbox" ? (
+            <Inbox />
+          ) : page === "settings" ? (
           <Settings />
         ) : page === "home" ? (
           <Home />

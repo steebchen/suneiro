@@ -1,4 +1,8 @@
+
 import { profileMock } from "./profiles";
+
+import { mockSupervision } from "./supervision";
+
 
 // Dev-only fake backend so the UI can run in a plain browser (`pnpm dev`,
 // then open http://localhost:1420). Never bundled into the Tauri build.
@@ -16,7 +20,7 @@ function send(ch: Channel, message: any) {
 }
 
 let events: Channel | null = null;
-const emit = (...batch: any[]) => events && send(events, batch);
+const emit = (...batch: any[]) => events && send(events, [...batch, ...supervision.observe(batch)]);
 // `?update` in the URL pretends a new version is available; `?update=launch`
 // that it's installing on its own at launch.
 const updateParam = new URLSearchParams(location.search).get("update");
@@ -143,6 +147,8 @@ async function streamReply(sessionId: string, text: string, images?: string[]) {
 let pricing: Record<string, any> = {};
 const attachments = new Map<string, string>();
 const mergeState: Record<string, any> = {};
+const supervision = mockSupervision(sessions, workspaces, usageRows, emit);
+
 let repoSettings: any = { scripts: { run: "pnpm dev --port $SUNEIRO_PORT" }, copy: [".env"] };
 function usageRows() {
   const rows: any[] = [];
@@ -168,7 +174,11 @@ function usageRows() {
 
 const profileBackend = profileMock({ sessions, catalogs, history: sessionHistory, emit, patch });
 const handlers: Record<string, (a: any) => any> = {
+
   ...profileBackend.handlers,
+
+  ...supervision.handlers,
+
   subscribe: (a) => {
     events = a.channel;
     setTimeout(() => emit({ type: "sessionCapabilities", sessionId: "s1", capabilities: { steering: true, images: true, resume: true, load: false } }, { type: "sessionConfig", sessionId: "s1", configOptions: config }, { type: "sessionUpdate", sessionId: "s1", update: commands }, { type: "sessionState", sessionId: "s1", state: "idle", error: null }), 50);
@@ -219,6 +229,7 @@ const handlers: Record<string, (a: any) => any> = {
     );
   },
   send_prompt: (a) => {
+    supervision.admit(a.sessionId);
     if (a.text.startsWith("ask")) {
       const codex = a.text.includes("codex");
       emit({ type: "userMessage", sessionId: a.sessionId, text: a.text, ts: Date.now() }, { type: "sessionState", sessionId: a.sessionId, state: "running", error: null });

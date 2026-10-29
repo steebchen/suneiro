@@ -1,7 +1,12 @@
 import { create } from "zustand";
 import { api, type ChangedFile, type AgentDef, type AgentStatus, type Catalog, type LoadoutEntry, type ModelPrice, type PrStatus, type Settings, type Usage, type UpdateStatus, type ConfigOption, type CoreEvent, type PermissionOption, type Repo, type Session, type Workspace, type SessionCapabilities } from "./api";
 import { applyEvents, emptyTranscript, type Transcript } from "./transcript";
+
 import type { AgentProfile } from "./profiles";
+
+import { handleSupervisionEvents, loadInbox } from "./supervision";
+import { notifyOnce } from "./notifications";
+
 
 export type Permission = { requestId: string; toolCall: any; options: PermissionOption[] };
 export type PendingQuestion = {
@@ -82,7 +87,7 @@ type State = {
   attachments: Record<string, string[]>;
   settings: Settings | null;
   agentStatus: AgentStatus[] | null;
-  page: "workspace" | "settings" | "home" | "insights";
+  page: "workspace" | "settings" | "home" | "insights" | "inbox";
   /** latest PR per workspace; missing = not fetched yet, null = no PR */
   prs: Record<string, PrStatus | null>;
   /** models/efforts per agent, discovered from the agents themselves */
@@ -147,6 +152,7 @@ async function guard<T>(p: Promise<T>): Promise<T | undefined> {
 }
 
 function handleEvents(events: CoreEvent[]) {
+  handleSupervisionEvents(events);
   const s = get();
   const attention: Attention[] = [];
   const views = { ...s.views };
@@ -157,6 +163,7 @@ function handleEvents(events: CoreEvent[]) {
   const bySession = new Map<string, CoreEvent[]>();
 
   for (const e of events) {
+
 
     if (e.type === "sessionAdded") {
       sessions = upsertSession(sessions, e.session);
@@ -186,6 +193,13 @@ function handleEvents(events: CoreEvent[]) {
 
       continue;
     }
+
+    if (e.type === "inboxUpdated") {
+      if (!isVisible(e.item.sessionId)) void notifyOnce(e.item.id, "Suneiro — " + e.item.kind, e.item.message);
+      continue;
+    }
+    if (e.type === "inboxResolved" || e.type === "repoControlsChanged") continue;
+
     if (e.type === "scriptOutput") {
       if (scriptLog === s.scriptLog) scriptLog = { ...scriptLog };
       scriptLog[e.workspaceId] = (scriptLog[e.workspaceId] ?? "") + e.data;
@@ -272,7 +286,7 @@ function handleEvents(events: CoreEvent[]) {
     const asks = list.find((e) => e.type === "question" || e.type === "permissionRequest");
     if ((finished || asks) && !isVisible(sessionId)) {
       if (finished) v.unread = true;
-      attention.push({ sessionId, kind: asks ? "input" : "done", detail: asks?.type === "question" ? asks.message : undefined });
+      attention.push({ sessionId, kind: asks ? "input" : "done", notificationId: finished?.type === "turnEnd" ? `turn:${sessionId}:${finished.ts}` : "" });
     }
     // Send the next queued follow-up once a turn ends normally.
     if (finished && finished.type === "turnEnd" && finished.stopReason === "end_turn" && v.queued.length && !v.queueHeld) {
@@ -303,7 +317,7 @@ function scheduleDiffStats(workspaceId: string, delay = 1500) {
   );
 }
 
-type Attention = { sessionId: string; kind: "done" | "input"; detail?: string };
+type Attention = { sessionId: string; kind: "done" | "input"; notificationId: string };
 
 /** Bold the workspace in the sidebar and post a macOS notification. */
 function notifyAttention(a: Attention) {
@@ -313,21 +327,7 @@ function notifyAttention(a: Attention) {
   if (!ws.unread) void actions.markUnread(ws.id, true);
   if (document.hasFocus() && s.selectedWorkspace === ws.id) return;
   const title = ws.title || (s.sessions[ws.id] ?? []).find((x) => x.title)?.title || ws.name;
-  void notify(title, a.kind === "input" ? (a.detail ? `Question: ${a.detail}` : "Needs your input") : "Finished");
-}
-
-let notifyPermission: boolean | null = null;
-async function notify(title: string, body: string) {
-  if (!("__TAURI_INTERNALS__" in window)) return;
-  try {
-    const n = await import("@tauri-apps/plugin-notification");
-    if (notifyPermission === null) {
-      notifyPermission = (await n.isPermissionGranted()) || (await n.requestPermission()) === "granted";
-    }
-    if (notifyPermission) n.sendNotification({ title, body });
-  } catch {
-    // Notifications are best-effort.
-  }
+  if (a.kind === "done") void notifyOnce(a.notificationId, title, "Finished");
 }
 
 function isVisible(sessionId: string) {
@@ -360,6 +360,7 @@ export const actions = {
     void actions.detectAgents().then(() => actions.ensureCatalogs());
     void actions.loadRecents();
     void actions.loadUsage();
+    void loadInbox().catch((e) => toast(String(e)));
     void api.updateStatus().then((update) => set({ update })).catch(() => {});
     const lists = await Promise.all(workspaces.map((w) => api.listSessions(w.id)));
     const sessions: Record<string, Session[]> = {};
@@ -708,7 +709,14 @@ export const actions = {
   },
 
   async send(sessionId: string, text: string, images: string[] = []) {
-    await guard(api.sendPrompt(sessionId, text, images));
+    try {
+      await api.sendPrompt(sessionId, text, images);
+    } catch (e) {
+      const draft = get().drafts[sessionId] ?? "";
+      actions.setDraft(sessionId, draft ? `${text}\n\n${draft}` : text);
+      actions.setAttachments(sessionId, [...new Set([...images, ...(get().attachments[sessionId] ?? [])])]);
+      toast(String(e));
+    }
   },
 
   /** Attach image files (copied into the app's data folder). */

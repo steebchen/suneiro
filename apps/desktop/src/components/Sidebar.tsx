@@ -30,6 +30,7 @@ import { type PrStatus, type Repo, type Workspace } from "../lib/api";
 import { BrandMark } from "./BrandMark";
 import { AddRepoMenu } from "./AddRepoMenu";
 import { openRepoSettings } from "./RepoSettings";
+import { InboxButton } from "./Inbox";
 
 /** Collapsed repo groups (a per-device convenience). */
 function useCollapsed() {
@@ -133,6 +134,7 @@ export function Sidebar() {
       </div>
       <div className="space-y-0.5 px-2 pb-2">
         <HomeButton />
+        <InboxButton />
         <InsightsButton />
       </div>
       <div ref={listRef} className="flex-1 overflow-y-auto px-2 pb-3">

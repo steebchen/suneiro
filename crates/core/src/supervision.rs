@@ -362,15 +362,6 @@ impl Store {
         )?;
         Ok(())
     }
-    pub fn inbox_session(&self, id: &str) -> Result<Option<String>> {
-        Ok(self
-            .conn
-            .lock()
-            .query_row("SELECT session_id FROM supervision_inbox WHERE id=?1", [id], |r| {
-                r.get(0)
-            })
-            .optional()?)
-    }
 }
 impl crate::Core {
     pub fn inbox(&self) -> Result<Vec<InboxItem>> {

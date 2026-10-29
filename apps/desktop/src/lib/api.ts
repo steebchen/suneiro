@@ -155,7 +155,10 @@ export type CoreEvent =
   | { type: "workspaceTitle"; workspaceId: string; title: string }
   | { type: "workspaceBranch"; workspaceId: string; branch: string }
   | { type: "workspacePr"; workspaceId: string; pr: PrStatus | null }
-  | { type: "scriptOutput"; workspaceId: string; data: string };
+  | { type: "scriptOutput"; workspaceId: string; data: string }
+  | { type: "inboxUpdated"; item: InboxItem }
+  | { type: "inboxResolved"; id: string }
+  | { type: "repoControlsChanged"; repoId: string; controls: RepoControls };
 
 export type PrStatus = {
   number: number;
@@ -168,8 +171,18 @@ export type PrStatus = {
   headRefName?: string;
   statusCheckRollup: { name?: string; context?: string; status?: string; conclusion?: string; state?: string }[];
 };
+export type InboxItem = { id: string; sessionId: string; workspaceId: string; repoId: string; kind: string; message: string; createdAt: number; resolved: boolean };
+export type RepoControls = { maxConcurrent: number; paused: boolean; warningUsd: number | null; stopUsd: number | null; spendSince: number };
+export type ResourceUsage = { sessions: number; running: number; turns: number; inputTokens: number; cachedTokens: number; outputTokens: number; reportedUsd: number; estimatedUsd: number; unknownTurns: number };
 
 export const api = {
+  inbox: () => invoke<InboxItem[]>("supervision_inbox"),
+  dismissInbox: (id: string) => invoke<void>("dismiss_inbox", { id }),
+  claimNotification: (id: string) => invoke<boolean>("claim_notification", { id }),
+  repoControls: (repoId: string) => invoke<RepoControls>("repo_controls", { repoId }),
+  saveRepoControls: (repoId: string, controls: RepoControls) => invoke<void>("save_repo_controls", { repoId, controls }),
+  repoResources: (repoId: string) => invoke<ResourceUsage>("repo_resources", { repoId }),
+  subtreeResources: (sessionId: string) => invoke<ResourceUsage>("subtree_resources", { sessionId }),
   subscribe: (onEvents: (events: CoreEvent[]) => void) => {
     const channel = new Channel<CoreEvent[]>();
     channel.onmessage = onEvents;

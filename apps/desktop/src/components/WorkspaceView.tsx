@@ -12,8 +12,12 @@ import { TerminalPanel } from "./TerminalPanel";
 import { PrActions } from "./PrActions";
 import { SyncBadge } from "./SyncBadge";
 import { Menu } from "./Menu";
+
 import { TabHierarchy } from "./TabHierarchy";
 import { ProfileLauncher } from "./ProfileDialog";
+
+import { TaskResourcesButton } from "./Inbox";
+
 
 type Tab = "changes" | "terminal" | "setup";
 
@@ -56,7 +60,8 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
           {ws.status !== "creating" && ws.status !== "failed" && <SyncBadge workspace={ws} sessionId={chatId} />}
         </div>
         <div className="flex-1" data-tauri-drag-region />
-        {ws.status !== "creating" && ws.status !== "failed" && <PrActions workspace={ws} sessionId={chatId} />}
+        {chatId && <TaskResourcesButton repoId={ws.repoId} sessionId={chatId} />}
+          {ws.status !== "creating" && ws.status !== "failed" && <PrActions workspace={ws} sessionId={chatId} />}
         <Menu
           label={
             <span className="flex items-center gap-1">

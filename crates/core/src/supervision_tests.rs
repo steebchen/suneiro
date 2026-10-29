@@ -182,6 +182,77 @@ fn notification_claim_is_atomic_and_survives_restart() {
     let reopened = Store::open(&dir.path().join("db.sqlite")).unwrap();
     assert!(!reopened.claim_notification("same-event").unwrap());
 }
+#[test]
+fn request_ids_can_repeat_after_reconnect_but_steering_keeps_the_generation() {
+    let (_dir, store) = fixture();
+    let admissions = Admissions::default();
+    let question = Event::Question {
+        session_id: "s".into(),
+        request_id: "reused".into(),
+        message: "Choose".into(),
+        schema: serde_json::json!({}),
+        tool_call_id: None,
+        auto_resolve_ms: None,
+    };
+    let resolve = Event::QuestionResolved {
+        session_id: "s".into(),
+        request_id: "reused".into(),
+    };
+    let first = admissions.admit(&store, "s", "r").unwrap();
+    store.observe_supervision(&question).unwrap();
+    let first_id = store.inbox().unwrap()[0].id.clone();
+    store
+        .observe_supervision(&Event::UserMessage {
+            session_id: "s".into(),
+            text: "steer the active turn".into(),
+            ts: 1,
+            images: vec![],
+        })
+        .unwrap();
+    store.observe_supervision(&resolve).unwrap();
+    assert!(store.inbox().unwrap().is_empty());
+    drop(first);
+    let _second = admissions.admit(&store, "s", "r").unwrap();
+    assert_eq!(store.observe_supervision(&question).unwrap().len(), 1);
+    assert_ne!(store.inbox().unwrap()[0].id, first_id);
+}
+#[test]
+fn spend_warning_and_delegation_report_are_durable_deduplicated_entries() {
+    let (dir, store) = fixture();
+    store
+        .save_repo_controls(
+            "r",
+            &RepoControls {
+                warning_usd: Some(1.0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let u = row("s", "reported", Some(2.0));
+    store.add_usage(&u).unwrap();
+    let usage = Event::Usage {
+        session_id: "s".into(),
+        usage: price(u, &Default::default()),
+    };
+    assert_eq!(store.observe_supervision(&usage).unwrap().len(), 1);
+    assert!(store.observe_supervision(&usage).unwrap().is_empty());
+    assert!(store
+        .push_inbox("s", "delegation:task", "delegation", "Done")
+        .unwrap()
+        .is_some());
+    let reopened = Store::open(&dir.path().join("db.sqlite")).unwrap();
+    assert!(reopened
+        .push_inbox("s", "delegation:task", "delegation", "Done")
+        .unwrap()
+        .is_none());
+    assert_eq!(reopened.inbox().unwrap().len(), 2);
+    reopened.resolve_inbox("delegation:task").unwrap();
+    assert!(reopened
+        .push_inbox("s", "delegation:task", "delegation", "Replayed")
+        .unwrap()
+        .is_none());
+    assert_eq!(reopened.inbox().unwrap().len(), 1);
+}
 
 #[test]
 fn hierarchy_rollup_prices_each_original_row_once_after_reopen() {
