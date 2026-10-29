@@ -127,7 +127,20 @@ pub enum Event {
         workspace_id: String,
     },
 
+
     ProfilesChanged { profiles: Vec<crate::profiles::AgentProfile> },
+
+
+    InboxUpdated {
+        item: crate::supervision::InboxItem,
+    },
+    InboxResolved {
+        id: String,
+    },
+    RepoControlsChanged {
+        repo_id: String,
+        controls: crate::supervision::RepoControls,
+    },
 
 }
 

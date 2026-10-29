@@ -133,10 +133,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 "#;
 
-pub struct Store {
-    conn: Mutex<Connection>,
-    writer: mpsc::Sender<(String, Value)>,
-}
+pub struct Store { pub(crate) conn: Mutex<Connection>, writer: mpsc::Sender<(String, Value)>, }
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
@@ -145,6 +142,7 @@ impl Store {
         }
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(crate::supervision::SCHEMA)?;
         migrate(&conn)?;
         let writer = spawn_event_writer(Connection::open(path)?);
         Ok(Self { conn: Mutex::new(conn), writer })

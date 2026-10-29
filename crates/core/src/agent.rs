@@ -99,6 +99,7 @@ pub struct Agents {
     sessions: Mutex<HashMap<String, Arc<LiveSession>>>,
     defs: Mutex<Vec<AgentDef>>,
     file_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    pub(crate) admissions: crate::supervision::Admissions,
 }
 
 impl Agents {
@@ -109,6 +110,7 @@ impl Agents {
             sessions: Mutex::default(),
             defs: Mutex::new(builtin_agents()),
             file_locks: Mutex::default(),
+            admissions: Default::default(),
         }
     }
 
@@ -786,6 +788,8 @@ impl Agents {
 
     fn prompt_with_options(self: &Arc<Self>, session_id: &str, text: String, images: Vec<String>, expand_context: bool) -> Result<()> {
         let s = self.get(session_id)?;
+        let ws = self.store.workspace(&s.workspace_id)?;
+        let permit = self.admissions.admit(&self.store, session_id, &ws.repo_id)?;
         if s.running.swap(true, Ordering::SeqCst) {
             bail!("agent is still working");
         }
@@ -803,6 +807,7 @@ impl Agents {
         self.emitter.emit(Event::WorkspaceStatus { workspace_id: s.workspace_id.clone(), status: "dirty".into() });
         let this = self.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             let result = async {
                 let conn = this.connect(&s).await?;
                 this.checkpoint(&s).await;
