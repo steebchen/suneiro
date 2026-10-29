@@ -41,7 +41,13 @@ readline.createInterface({ input: process.stdin }).on("line", async line => {
     case "session/set_config_option":
       if (params.configId === "model") model = params.value;
       if (params.configId === "effort") effort = params.value;
-      if (params.configId === "mode") mode = params.value;
+      if (params.configId === "mode") {
+        mode = params.value;
+        if (args.has("--mode-resets-model")) {
+          model = "sonnet";
+          effort = "medium";
+        }
+      }
       // Reply-only changes: ACP does not require a redundant notification.
       return send({ id, result: { configOptions: config() } });
     case "session/cancel":

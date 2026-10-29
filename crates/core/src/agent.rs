@@ -296,6 +296,13 @@ impl Agents {
             self.set_config_options(s, opts.clone());
         }
         if is_new || (matches!(s.agent.id.as_str(), "opencode" | "codex") && s.initial.lock().is_some()) {
+            // Claude permission-mode changes can switch models; apply the user's pin last.
+            if s.agent.id == "claude" {
+                if let Err(e) = self.apply_mode(s, &conn).await {
+                    log::warn!("could not apply permission mode: {e:#}");
+                }
+            }
+
             if let Err(e) = self.apply_initial(s, &conn).await {
                 if matches!(s.agent.id.as_str(), "opencode" | "codex") {
                     conn.kill();

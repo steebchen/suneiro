@@ -37,8 +37,10 @@ impl Fixture {
         }).unwrap();
         // Avoid background AI titles without changing process-wide environment.
         let sid = "fixture-session".to_string();
+
         core.store.add_session(&Session { id: sid.clone(), workspace_id: "w".into(), agent_id: "claude".into(), acp_session_id: None, title: "Fixture".into(), created_at: 0, model: model.map(str::to_string), effort: effort.map(str::to_string), parent_session_id: None }).unwrap();
-        core.agents.preset(&sid, false, model.map(str::to_string), effort.map(str::to_string)).unwrap();
+        core.agents.preset(&sid, args.contains(&"--plan"), model.map(str::to_string), effort.map(str::to_string)).unwrap();
+
         core.agents.warm_up(&sid);
         let f = Self { core, log, sid, _dir: dir };
         f.wait(|e| matches!(e, Event::SessionState { state, .. } if state == "idle")).await;
@@ -63,6 +65,20 @@ impl Fixture {
 
     fn has_text(&self, needle: &str) -> bool {
         self.log.lock().iter().any(|e| matches!(e, Event::SessionUpdate { update, .. } if update["content"]["text"].as_str().is_some_and(|s| s.contains(needle))))
+    }
+}
+
+#[tokio::test]
+async fn initial_model_and_effort_survive_claude_mode_changes() {
+    for plan in [false, true] {
+        let mut args = vec!["--mode-resets-model"];
+        if plan { args.push("--plan"); }
+        let f = Fixture::new(&args, Some("opus"), Some("max")).await;
+        let session = f.core.store.session(&f.sid).unwrap();
+        assert_eq!(session.model.as_deref(), Some("opus"), "permission-mode setup must not replace the selected model");
+        assert_eq!(session.effort.as_deref(), Some("max"));
+        f.turn("hello").await;
+        assert!(f.has_text("model:opus;effort:max"));
     }
 }
 
