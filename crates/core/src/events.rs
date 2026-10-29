@@ -115,6 +115,13 @@ pub enum Event {
         workspace_id: String,
         data: String,
     },
+    DelegationChanged {
+        session_id: String,
+        task: crate::delegation::Task,
+    },
+    WorkspaceAdded {
+        workspace: crate::Workspace,
+    },
     SessionAdded {
         session: crate::store::Session,
     },

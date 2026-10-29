@@ -66,6 +66,7 @@ const newView = (loaded: boolean): SessionView => ({
 type State = {
   ready: boolean;
   profiles: AgentProfile[] | null;
+  delegationRevision: Record<string, number>;
   agents: AgentDef[];
   repos: Repo[];
   workspaces: Workspace[];
@@ -106,6 +107,7 @@ type State = {
 export const useStore = create<State>(() => ({
   ready: false,
   profiles: null,
+  delegationRevision: {},
   agents: [],
   repos: [],
   workspaces: [],
@@ -163,8 +165,6 @@ function handleEvents(events: CoreEvent[]) {
   const bySession = new Map<string, CoreEvent[]>();
 
   for (const e of events) {
-
-
     if (e.type === "sessionAdded") {
       sessions = upsertSession(sessions, e.session);
       views[e.session.id] ??= newView(true);
@@ -200,6 +200,14 @@ function handleEvents(events: CoreEvent[]) {
     }
     if (e.type === "inboxResolved" || e.type === "repoControlsChanged") continue;
 
+    if (e.type === "workspaceAdded") {
+      set({ workspaces: [e.workspace, ...get().workspaces.filter((w) => w.id !== e.workspace.id)] });
+      continue;
+    }
+    if (e.type === "delegationChanged") {
+      set({ delegationRevision: { ...get().delegationRevision, [e.sessionId]: (get().delegationRevision[e.sessionId] ?? 0) + 1 } });
+      continue;
+    }
     if (e.type === "scriptOutput") {
       if (scriptLog === s.scriptLog) scriptLog = { ...scriptLog };
       scriptLog[e.workspaceId] = (scriptLog[e.workspaceId] ?? "") + e.data;

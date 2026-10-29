@@ -125,6 +125,8 @@ export type AcpUpdate = { sessionUpdate: string; [key: string]: any };
 
 export type CoreEvent =
   | { type: "profilesChanged"; profiles: AgentProfile[] }
+  | { type: "workspaceAdded"; workspace: Workspace }
+  | { type: "delegationChanged"; sessionId: string; task: DelegatedTask }
   | { type: "sessionUpdate"; sessionId: string; update: AcpUpdate }
   | { type: "userMessage"; sessionId: string; text: string; ts: number; images?: string[] }
   | { type: "checkpoint"; sessionId: string; commit: string }
@@ -188,6 +190,12 @@ export const api = {
     channel.onmessage = onEvents;
     return invoke<void>("subscribe", { channel });
   },
+  delegateTask: (sessionId: string, request: DelegationRequest) => invoke<DelegatedTask>("delegate_task", { sessionId, request }),
+  delegationTasks: (sessionId: string) => invoke<DelegatedTask[]>("delegation_tasks", { sessionId }),
+  delegationMessages: (sessionId: string) => invoke<DelegationMessage[]>("delegation_messages", { sessionId }),
+  delegationSend: (sessionId: string, taskId: string, message: string) => invoke<void>("delegation_send", { sessionId, taskId, message }),
+  delegationCancel: (sessionId: string, taskId: string) => invoke<DelegatedTask>("delegation_cancel", { sessionId, taskId }),
+  delegationFinish: (sessionId: string, taskId: string, report: string) => invoke<DelegatedTask>("delegation_finish", { sessionId, taskId, report }),
   listAgents: () => invoke<AgentDef[]>("list_agents"),
   listRepos: () => invoke<Repo[]>("list_repos"),
   addRepo: (path: string) => invoke<Repo>("add_repo", { path }),
@@ -297,3 +305,6 @@ export const api = {
   openPath: (path: string, appName?: string) => invoke<void>("open_path", { path, appName: appName ?? null }),
 };
 export type SessionCapabilities = { steering: boolean; images: boolean; resume: boolean; load: boolean };
+export type DelegationRequest = { requestKey: string; base: "caller_head" | "repo_default"; relation: "child" | "sibling"; isolation: "isolated" | "same_workspace"; agentId: string; model: string | null; effort: string | null; brief: string; acceptanceCriteria: string; selectedContext: string };
+export type DelegatedTask = { id: string; callerSessionId: string; sessionId: string | null; workspaceId: string | null; state: string; request: DelegationRequest; report: string | null };
+export type DelegationMessage = { id: number; taskId: string; senderSessionId: string; text: string };

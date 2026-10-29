@@ -313,6 +313,21 @@ impl Store {
                 }
                 None
             }
+            Event::DelegationChanged { task, .. }
+                if matches!(task.state.as_str(), "completed" | "failed" | "cancelled") =>
+            {
+                if let Some(report) = task.report.as_deref() {
+                    let session_id = task.session_id.as_deref()
+                        .filter(|id| self.session(id).is_ok())
+                        .unwrap_or(&task.caller_session_id);
+                    if self.session(session_id).is_ok() {
+                        if let Some(item) = self.push_inbox(session_id, &format!("delegation:{}", task.id), "delegation", report)? {
+                            changes.push(Event::InboxUpdated { item });
+                        }
+                    }
+                }
+                None
+            }
             Event::Usage { session_id, usage } => {
                 let controls = self.repo_controls(&usage.record.repo_id)?;
                 if let Some(warn) = controls.warning_usd {

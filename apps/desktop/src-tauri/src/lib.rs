@@ -10,7 +10,11 @@ use suneiro_core::{AgentDef, Core, Event, Repo, Session, Workspace};
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{Emitter, Manager, RunEvent, State};
 
+
 mod supervision;
+
+mod delegation;
+
 mod updater;
 mod profiles;
 
@@ -185,9 +189,11 @@ async fn create_session(
     model: Option<String>,
     effort: Option<String>,
 ) -> Res<Session> {
+
     app.core
         .create_session(&workspace_id, &agent_id, model, effort)
         .map_err(err)
+
 }
 
 #[tauri::command]
@@ -495,11 +501,13 @@ fn save_settings(app: State<'_, App>, settings: suneiro_core::setup::Settings) -
 
 #[tauri::command]
 async fn detect_agents() -> Vec<suneiro_core::setup::AgentStatus> {
+
     let (a, b, c) = tokio::join!(
         suneiro_core::setup::detect("claude"),
         suneiro_core::setup::detect("codex"),
         suneiro_core::setup::detect("opencode"),
     );
+
     [a, b, c].into_iter().flatten().collect()
 }
 
@@ -599,6 +607,7 @@ pub fn run() {
             bus.start();
             let sink_bus = bus.clone();
             let core = Core::new(&data_dir, Arc::new(move |e| sink_bus.queue.lock().push(e)))?;
+            core.set_delegation_executable(&std::env::current_exe()?)?;
             let poller = core.clone();
             tauri::async_runtime::spawn(async move { poller.start_pr_poller() });
             app.manage(App { core, bus });
@@ -645,9 +654,6 @@ pub fn run() {
             save_repo_settings,
             list_sessions,
             create_session,
-            create_child_session,
-            create_sibling_session,
-            detach_session,
             delete_session,
             connect_session,
             session_events,
@@ -698,6 +704,15 @@ pub fn run() {
             updater::update_status,
             updater::install_update,
             updater::cancel_update,
+            delegation::delegate_task,
+            delegation::delegation_tasks,
+            delegation::delegation_messages,
+            delegation::delegation_send,
+            delegation::delegation_cancel,
+            delegation::delegation_finish,
+            create_child_session,
+            create_sibling_session,
+            detach_session,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

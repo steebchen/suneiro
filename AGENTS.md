@@ -112,12 +112,16 @@ SUNEIRO_E2E_GH_REPO=steebchen/runner-e2e-test cargo test -p suneiro-core --test 
 - **Permissions:** sessions auto-accept every permission request by default. Plan mode (Shift+Tab in the composer) forwards requests to the user. Agent permission pickers are hidden in the UI.
 
 
+
 - **Codex compatibility:** `codex.rs` owns safe CLI login labels, legacy `model[effort]` presets, read-only plan sandbox mapping, and reported-model attribution. Apply model before reasoning effort and reject unsupported choices instead of silently substituting. Codex plan uses both `mode=read-only` and `collaboration_mode=plan`; ordinary auto-accept retains full access. See `docs/codex.md` for deterministic fixtures, real-smoke command, observed adapter/CLI versions, and explicit live-verification limits.
 
 - **Profiles and handoffs:** `profiles.rs` stores reusable instructions and per-provider model/effort preferences in SQLite settings. `prepare_context` creates a single-use, frozen preview from explicitly selected messages, individual workspace-relative files/diffs and acceptance criteria (32 items, 16 KiB each, 64 KiB total). Secret paths, traversal, outside symlinks, binary/oversized files and cross-workspace messages are rejected. `launch_profile` starts a new conversation with `Agents::prompt_brief`; never use ordinary `prompt` for approved briefs, because it implicitly expands `@path` mentions. This packages context, not a sandbox: the launched agent retains normal workspace access.
 
 
 - **Supervision:** `supervision.rs` persists an actionable inbox and per-repository scheduling controls. Every `Agents::prompt_with` atomically admits a turn (duplicate, concurrency, pause, observed-spend checks) before side effects; rejected turns are not scheduled later. Subtree resources use `Store::subtree_session_ids` and original usage rows, separating reported/estimated/unknown costs without persisted aggregates. Spend controls stop new turns, not active spending; they are not exact dollar caps. Delegation terminal reports call `Core::record_delegation_completion` and reconcile on startup with task-id deduplication. Notification claims are durable and best-effort at-most-once; existing OS permission UX remains. See `docs/SUPERVISION.md`.
+
+
+- **Delegation:** `delegation.rs` persists scoped task launches, messages and immutable reports; `delegation_bridge.rs` exposes real stdio MCP tools through a private authenticated Unix socket (no TCP). Desktop handles `--suneiro-delegation-mcp` before Tauri starts. Default isolated checkout pins caller committed HEAD; shared files are opt-in. Frozen briefs use `Agents::prompt_brief` (no implicit @file context). Restart interrupts uncertain tasks, never replays a prompt; terminal reports reconcile by task ID. Manual chat controls work when MCP/Unix support is unavailable. Contracts, limits and opt-in real-agent check: `docs/delegation.md`.
 
 - **Platform-specific code stays isolated** (e.g. `open -a` in the Tauri layer), so Linux and Windows remain additive.
 

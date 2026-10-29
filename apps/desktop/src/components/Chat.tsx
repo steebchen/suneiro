@@ -14,6 +14,7 @@ import { ToolCallCard } from "./ToolCallCard";
 import { ModelPicker, cycleEffort, toggleFast } from "./ModelPicker";
 import { effortOption, fastOption, modelOption } from "../lib/models";
 import { mentionAt, rankFiles, workspaceFiles } from "../lib/mentions";
+import { DelegationPanel } from "./DelegationPanel";
 
 export function Chat({ sessionId, workspaceId }: { sessionId: string; workspaceId: string }) {
   const items = useStore((s) => s.views[sessionId]?.transcript.items) ?? EMPTY;
@@ -161,6 +162,7 @@ export function Chat({ sessionId, workspaceId }: { sessionId: string; workspaceI
         {permissions.map((p) => (
           <PermissionPrompt key={p.requestId} sessionId={sessionId} permission={p} />
         ))}
+        <DelegationPanel key={sessionId} sessionId={sessionId} />
         <Composer sessionId={sessionId} workspaceId={workspaceId} />
       </div>
     </div>

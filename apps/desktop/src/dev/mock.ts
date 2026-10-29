@@ -174,11 +174,14 @@ function usageRows() {
 
 const profileBackend = profileMock({ sessions, catalogs, history: sessionHistory, emit, patch });
 const handlers: Record<string, (a: any) => any> = {
-
   ...profileBackend.handlers,
-
   ...supervision.handlers,
-
+  delegation_tasks: () => [],
+  delegation_messages: () => [],
+  delegate_task: () => { throw new Error("Task launch requires the desktop backend; browser preview cannot run agents."); },
+  delegation_send: () => { throw new Error("Task messaging requires the desktop backend."); },
+  delegation_cancel: () => { throw new Error("Task cancellation requires the desktop backend."); },
+  delegation_finish: () => { throw new Error("Task reports require the desktop backend."); },
   subscribe: (a) => {
     events = a.channel;
     setTimeout(() => emit({ type: "sessionCapabilities", sessionId: "s1", capabilities: { steering: true, images: true, resume: true, load: false } }, { type: "sessionConfig", sessionId: "s1", configOptions: config }, { type: "sessionUpdate", sessionId: "s1", update: commands }, { type: "sessionState", sessionId: "s1", state: "idle", error: null }), 50);

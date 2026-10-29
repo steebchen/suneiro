@@ -32,6 +32,33 @@ fn row(session: &str, model: &str, cost: Option<f64>) -> UsageRecord {
 }
 
 #[test]
+fn terminal_delegation_reports_reconcile_once_after_dismissal_and_restart() {
+    let (dir, store) = fixture();
+    let task: crate::delegation::Task = serde_json::from_value(serde_json::json!({
+        "id":"task-one", "callerSessionId":"s", "sessionId":"c", "workspaceId":"w", "state":"completed", "report":"Tests passed",
+        "request":{"requestKey":"one","agentId":"claude","brief":"Implement","acceptanceCriteria":"Tests pass"}
+    })).unwrap();
+    let event = Event::DelegationChanged { session_id: "s".into(), task: task.clone() };
+    assert_eq!(store.observe_supervision(&event).unwrap().len(), 1);
+    assert!(store.observe_supervision(&Event::DelegationChanged { session_id: "c".into(), task: task.clone() }).unwrap().is_empty());
+    let inbox = store.inbox().unwrap();
+    assert_eq!(inbox.len(), 1);
+    assert_eq!(inbox[0].session_id, "c");
+    store.resolve_inbox(&inbox[0].id).unwrap();
+    drop(store);
+    let store = Store::open(&dir.path().join("db.sqlite")).unwrap();
+    assert!(store.observe_supervision(&event).unwrap().is_empty());
+    assert!(store.inbox().unwrap().is_empty());
+    store.delete_session("c").unwrap();
+    let mut fallback = task;
+    fallback.id = "task-two".into();
+    fallback.state = "failed".into();
+    let event = Event::DelegationChanged { session_id: "s".into(), task: fallback };
+    assert_eq!(store.observe_supervision(&event).unwrap().len(), 1);
+    assert_eq!(store.inbox().unwrap()[0].session_id, "s");
+}
+
+#[test]
 fn admission_is_atomic_and_duplicate_starts_do_not_queue() {
     let (_dir, store) = fixture();
     store

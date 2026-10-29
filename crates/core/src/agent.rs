@@ -100,6 +100,7 @@ pub struct Agents {
     defs: Mutex<Vec<AgentDef>>,
     file_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     pub(crate) admissions: crate::supervision::Admissions,
+    core: Mutex<Option<std::sync::Weak<crate::Core>>>,
 }
 
 impl Agents {
@@ -111,9 +112,17 @@ impl Agents {
             defs: Mutex::new(builtin_agents()),
             file_locks: Mutex::default(),
             admissions: Default::default(),
+            core: Mutex::default(),
         }
     }
 
+    pub fn attach_core(&self, core: std::sync::Weak<crate::Core>) {
+        *self.core.lock() = Some(core);
+    }
+    fn delegation_servers(&self, session: &str) -> Value {
+        let core = self.core.lock().as_ref().and_then(|core| core.upgrade());
+        core.map(|core| core.delegation_servers(session)).unwrap_or_else(|| json!([]))
+    }
     pub fn defs(&self) -> Vec<AgentDef> {
         self.defs.lock().clone()
     }
@@ -171,6 +180,12 @@ impl Agents {
     }
 
     fn state(&self, s: &LiveSession, state: &str, error: Option<String>) {
+        if state == "error" {
+            let core = self.core.lock().as_ref().and_then(|core| core.upgrade());
+            if let Some(core) = core {
+                core.delegation_failure(&s.id, error.as_deref().unwrap_or("unknown agent error"));
+            }
+        }
         self.emitter.emit(Event::SessionState { session_id: s.id.clone(), state: state.into(), error });
     }
 
@@ -255,10 +270,11 @@ impl Agents {
             Ordering::SeqCst,
         );
         let cwd = s.cwd.to_string_lossy().to_string();
+        let mcp_servers = self.delegation_servers(&s.id);
         let existing = s.acp_session_id.lock().clone();
         let is_new = existing.is_none();
         let response = if let Some(id) = &existing {
-            let params = json!({"sessionId": id, "cwd": cwd, "mcpServers": []});
+            let params = json!({"sessionId": id, "cwd": cwd, "mcpServers": mcp_servers});
             let result = if caps.pointer("/sessionCapabilities/resume").is_some_and(Value::is_object) {
                 conn.request("session/resume", params).await
             } else if caps.get("loadSession").and_then(Value::as_bool) == Some(true) {
@@ -271,7 +287,7 @@ impl Agents {
             };
             result.map_err(|e| anyhow!("could not resume saved conversation `{id}`: {e:#}. Existing conversation was kept; no prompt was replayed. Retry or start a new chat explicitly"))?
         } else {
-            let response = conn.request("session/new", json!({"cwd": cwd, "mcpServers": []})).await?;
+            let response = conn.request("session/new", json!({"cwd": cwd, "mcpServers": mcp_servers})).await?;
             let id = response
                 .get("sessionId")
                 .and_then(Value::as_str)
@@ -294,6 +310,7 @@ impl Agents {
                 return Err(error);
             }
         }
+
         if let Some(opts) = response.get("configOptions").filter(|v| v.is_array()) {
             self.set_config_options(s, opts.clone());
         }
@@ -581,13 +598,7 @@ impl Agents {
         let acp_id = s.acp_session_id.lock().clone().unwrap_or_default();
         let mut result = Ok(());
         for (config_id, value) in changes {
-            match conn
-                .request(
-                    "session/set_config_option",
-                    json!({"sessionId": acp_id, "configId": config_id, "value": value}),
-                )
-                .await
-            {
+            match conn.request("session/set_config_option", json!({"sessionId": acp_id, "configId": config_id, "value": value})).await {
                 Ok(r) => {
                     if let Some(opts) = r.get("configOptions").filter(|v| v.is_array()) {
                         self.set_config_options(s, opts.clone());
@@ -639,12 +650,7 @@ impl Agents {
                 })
             };
             let Some(config_id) = change else { continue };
-            let r = conn
-                .request(
-                    "session/set_config_option",
-                    json!({"sessionId": acp_id, "configId": config_id, "value": want}),
-                )
-                .await?;
+            let r = conn.request("session/set_config_option", json!({"sessionId": acp_id, "configId": config_id, "value": want})).await?;
             if let Some(opts) = r.get("configOptions").filter(|v| v.is_array()) {
                 self.set_config_options(s, opts.clone());
             }
@@ -736,13 +742,8 @@ impl Agents {
             waited += 1;
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         };
-        let settings: crate::setup::Settings = self
-            .store
-            .setting("settings")
-            .ok()
-            .flatten()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+        let settings: crate::setup::Settings =
+            self.store.setting("settings").ok().flatten().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         let Some(slug) = crate::workspace::branch_slug(title) else { return };
         let path = std::path::Path::new(&ws.path);
         let pushed = crate::git::has_upstream(path).await || crate::git::remote_branch_exists(path, &ws.branch).await;
@@ -797,14 +798,10 @@ impl Agents {
         if !s.titled.load(Ordering::SeqCst) && !text.trim().is_empty() {
             self.auto_title(&s, &text);
         }
-        self.emitter.emit(Event::UserMessage {
-            session_id: s.id.clone(),
-            text: text.clone(),
-            ts: now(),
-            images: images.clone(),
-        });
+        self.emitter.emit(Event::UserMessage { session_id: s.id.clone(), text: text.clone(), ts: now(), images: images.clone() });
         self.state(&s, "running", None);
         self.emitter.emit(Event::WorkspaceStatus { workspace_id: s.workspace_id.clone(), status: "dirty".into() });
+
         let this = self.clone();
         tokio::spawn(async move {
             let _permit = permit;
@@ -1002,12 +999,7 @@ impl Agents {
         }
     }
 
-    pub async fn respond_permission(
-        &self,
-        session_id: &str,
-        request_id: &str,
-        option_id: Option<String>,
-    ) -> Result<()> {
+    pub async fn respond_permission(&self, session_id: &str, request_id: &str, option_id: Option<String>) -> Result<()> {
         let s = self.get(session_id)?;
         let id =
             s.permissions.lock().remove(request_id).ok_or_else(|| anyhow!("permission request already resolved"))?;
@@ -1061,12 +1053,7 @@ impl Agents {
 
     /// Workspace of every chat in the middle of a turn, one entry per chat.
     pub fn running_workspaces(&self) -> Vec<String> {
-        self.sessions
-            .lock()
-            .values()
-            .filter(|s| s.running.load(Ordering::SeqCst))
-            .map(|s| s.workspace_id.clone())
-            .collect()
+        self.sessions.lock().values().filter(|s| s.running.load(Ordering::SeqCst)).map(|s| s.workspace_id.clone()).collect()
     }
 
     pub fn is_running(&self, session_id: &str) -> bool {
@@ -1074,6 +1061,12 @@ impl Agents {
     }
 
     pub fn close(&self, session_id: &str) {
+        #[cfg(unix)]
+        if let Some(core) = self.core.lock().as_ref().and_then(|core| core.upgrade()) {
+            if let Some(bridge) = core.delegation.bridge.lock().as_ref() {
+                bridge.revoke(session_id);
+            }
+        }
         if let Some(s) = self.sessions.lock().remove(session_id) {
             s.closed.store(true, Ordering::SeqCst);
             if let Some(conn) = s.transport.lock().as_ref() {
@@ -1105,10 +1098,7 @@ fn prompt_blocks(text: &str, cwd: &std::path::Path) -> Value {
             continue;
         }
         let uri = format!("file://{}", abs.display());
-        let text = std::fs::metadata(&abs)
-            .ok()
-            .filter(|m| m.len() <= 200_000)
-            .and_then(|_| std::fs::read_to_string(&abs).ok());
+        let text = std::fs::metadata(&abs).ok().filter(|m| m.len() <= 200_000).and_then(|_| std::fs::read_to_string(&abs).ok());
         blocks.push(match text {
             Some(text) => json!({"type": "resource", "resource": {"uri": uri, "text": text, "mimeType": "text/plain"}}),
             None => json!({"type": "resource_link", "uri": uri, "name": path}),

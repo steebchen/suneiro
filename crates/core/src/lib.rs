@@ -6,9 +6,14 @@ pub mod acp;
 pub mod agent;
 pub mod attachments;
 pub mod catalog;
+
 pub mod capabilities;
 pub mod opencode;
 mod codex;
+
+pub mod delegation;
+pub mod delegation_bridge;
+
 pub mod env;
 pub mod events;
 pub mod forge;
@@ -127,22 +132,24 @@ pub struct Core {
     fetched: parking_lot::Mutex<std::collections::HashMap<String, std::time::Instant>>,
     /// Workspaces with a setup/archive in progress (count per workspace).
     jobs: Arc<parking_lot::Mutex<std::collections::HashMap<String, usize>>>,
+    pub delegation: Arc<delegation::Delegation>,
 }
 
 impl Core {
     pub fn new(data_dir: &Path, sink: Sink) -> Result<Arc<Self>> {
         let store = Arc::new(Store::open(&storage::database_path(data_dir))?);
+
         store.recover_inbox()?;
         let emitter = Emitter {
             store: store.clone(),
             sink,
         };
+        let delegation = Arc::new(delegation::Delegation::open(&storage::database_path(data_dir))?);
         let agents = Arc::new(Agents::new(store.clone(), emitter.clone()));
-        // Warm the login-shell env capture off the UI's critical path.
         std::thread::spawn(|| {
             env::login_env();
         });
-        Ok(Arc::new(Self {
+        let core = Arc::new(Self {
             store,
             data_dir: data_dir.to_path_buf(),
             agents,
@@ -152,7 +159,11 @@ impl Core {
             pr_refresh: tokio::sync::Notify::new(),
             fetched: Default::default(),
             jobs: Default::default(),
-        }))
+            delegation,
+        });
+        core.agents.attach_core(Arc::downgrade(&core));
+        core.reconcile_delegation_reports()?;
+        Ok(core)
     }
 
     /// What a restart would interrupt right now.
@@ -321,10 +332,16 @@ impl Core {
     }
 
     /// New workspace on a fresh branch, or on `existing` (branch, base, title).
-    async fn new_workspace(
+
+    async fn new_workspace(self: &Arc<Self>, repo_id: &str, existing: Option<(String, String, String)>) -> Result<Workspace> {
+        self.new_workspace_at(repo_id, existing, None).await
+    }
+    async fn new_workspace_at(
         self: &Arc<Self>,
         repo_id: &str,
         existing: Option<(String, String, String)>,
+        start_ref: Option<String>,
+
     ) -> Result<Workspace> {
         let repo = self.store.repo(repo_id)?;
         let repo_path = PathBuf::from(&repo.path);
@@ -334,12 +351,14 @@ impl Core {
         let taken = self.store.workspace_names(repo_id)?;
         let mut name = pick_name(&taken, now() as u64);
         let mut n = 2;
+
         while git::git(
             &repo_path,
             &["rev-parse", "--verify", "--quiet", &format!("{prefix}{name}")],
         )
         .await
         .is_ok()
+
             || root.join(&name).exists()
         {
             name = format!("{}-{n}", pick_name(&taken, now() as u64));
@@ -366,18 +385,21 @@ impl Core {
 
         // Fetching and checking out can take a while on big repos; return right
         // away and let the UI show progress via WorkspaceStatus events.
-        self.spawn_worktree_setup(ws.clone(), repo, new_branch);
+        self.spawn_worktree_setup_at(ws.clone(), repo, new_branch, start_ref);
         Ok(ws)
     }
 
     /// Create (or re-create) the worktree in the background, then run setup.
     fn spawn_worktree_setup(self: &Arc<Self>, ws: Workspace, repo: Repo, new_branch: bool) {
+        self.spawn_worktree_setup_at(ws, repo, new_branch, None)
+    }
+    fn spawn_worktree_setup_at(self: &Arc<Self>, ws: Workspace, repo: Repo, new_branch: bool, start_ref: Option<String>) {
         let this = self.clone();
         let job = WorkspaceJob::start(&self.jobs, &ws.id);
         tokio::spawn(async move {
             let _job = job;
             let repo_path = PathBuf::from(&repo.path);
-            let status = match this.prepare_worktree(&ws, &repo_path, new_branch).await {
+            let status = match this.prepare_worktree_at(&ws, &repo_path, new_branch, start_ref.as_deref()).await {
                 Ok(Some(setup)) => {
                     this.set_status(&ws.id, "setting_up");
                     let ok = this.run_script(&ws, &repo.path, &setup).await;
@@ -389,10 +411,12 @@ impl Core {
                 }
                 Ok(None) => "ready",
                 Err(e) => {
+
                     this.emitter.emit(Event::ScriptOutput {
                         workspace_id: ws.id.clone(),
                         data: format!("Failed to create worktree: {e:#}\n"),
                     });
+
                     "failed"
                 }
             };
@@ -434,11 +458,21 @@ impl Core {
     }
 
     /// Create the worktree and copy configured files. Returns the setup script, if any.
-    async fn prepare_worktree(&self, ws: &Workspace, repo_path: &Path, new_branch: bool) -> Result<Option<String>> {
+    async fn prepare_worktree_at(
+        &self,
+        ws: &Workspace,
+        repo_path: &Path,
+        new_branch: bool,
+        start_ref: Option<&str>,
+    ) -> Result<Option<String>> {
         let path = PathBuf::from(&ws.path);
         tokio::fs::create_dir_all(path.parent().unwrap()).await?;
         if new_branch {
+            if let Some(start) = start_ref {
+                git::git(repo_path, &["worktree", "add", "--no-track", "-b", &ws.branch, &path.to_string_lossy(), start]).await?;
+            } else {
             git::create_worktree(repo_path, &path, &ws.branch, &ws.base_branch).await?;
+            }
         } else {
             git::ensure_local_branch(repo_path, &ws.branch).await?;
             git::add_worktree(repo_path, &path, &ws.branch).await?;
@@ -446,7 +480,9 @@ impl Core {
                 if let Err(e) = git::stash_pop(&path, &stash).await {
                     self.emitter.emit(Event::ScriptOutput {
                         workspace_id: ws.id.clone(),
-                        data: format!("Couldn't re-apply the changes saved when archiving ({e:#}). They're kept in `git stash` as {stash}.\n"),
+                        data: format!(
+                            "Couldn't re-apply the changes saved when archiving ({e:#}). They're kept in `git stash` as {stash}.\n"
+                        ),
                     });
                 }
             }
@@ -722,10 +758,12 @@ impl Core {
             undo: Some(undo.clone()),
             ts: now(),
         });
+
         self.emitter.emit(Event::WorkspaceStatus {
             workspace_id: session.workspace_id,
             status: "dirty".into(),
         });
+
         Ok(undo)
     }
 
@@ -973,9 +1011,11 @@ impl Core {
                 git::uncommitted_summary(&path).await?
             );
         }
+
         title::pr_text(&summary).await.ok_or_else(|| {
             anyhow!("couldn't write a description (this uses Claude Code; is it installed and signed in?)")
         })
+
     }
 
     pub async fn push(&self, workspace_id: &str) -> Result<()> {
