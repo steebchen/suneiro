@@ -8,7 +8,6 @@ import { PR_TAB, PrView } from "./PrView";
 import { api } from "../lib/api";
 import { Chat } from "./Chat";
 import { ChangesPanel } from "./ChangesPanel";
-import { VerificationPanel } from "./VerificationPanel";
 import { TerminalPanel } from "./TerminalPanel";
 import { PrActions } from "./PrActions";
 import { SyncBadge } from "./SyncBadge";
@@ -16,13 +15,9 @@ import { Menu } from "./Menu";
 
 
 import { TabHierarchy } from "./TabHierarchy";
-import { ProfileLauncher } from "./ProfileDialog";
+import { SavedReplyLimits } from "./SavedReplyLimits";
 
-import { TaskResourcesButton } from "./Inbox";
-
-
-
-type Tab = "changes" | "checks" | "terminal" | "setup";
+type Tab = "changes" | "terminal" | "setup";
 
 
 export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
@@ -64,8 +59,7 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
           {ws.status !== "creating" && ws.status !== "failed" && <SyncBadge workspace={ws} sessionId={chatId} />}
         </div>
         <div className="flex-1" data-tauri-drag-region />
-        {chatId && <TaskResourcesButton repoId={ws.repoId} sessionId={chatId} />}
-          {ws.status !== "creating" && ws.status !== "failed" && <PrActions workspace={ws} sessionId={chatId} />}
+        {ws.status !== "creating" && ws.status !== "failed" && <PrActions workspace={ws} sessionId={chatId} />}
         <Menu
           label={
             <span className="flex items-center gap-1">
@@ -98,8 +92,8 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
 
       <div className="flex min-h-0 flex-1">
         <section className="flex min-w-0 flex-1 flex-col">
-          <div className="flex shrink-0 items-center justify-end border-b border-border px-2 py-1"><ProfileLauncher workspaceId={ws.id} /></div>
           <TabHierarchy workspaceId={ws.id} activeId={sessionId} />
+          {sessionId !== PR_TAB && <SavedReplyLimits repoId={ws.repoId} />}
           {sessionId === PR_TAB ? (
             <PrView workspaceId={ws.id} />
           ) : sessionId ? (
@@ -116,7 +110,7 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
           >
             <ResizeHandle edge="left" onPointerDown={panelSize.onPointerDown} />
             <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-2">
-              {(["changes", "checks", "terminal", ...(hasSetupLog ? ["setup"] : [])] as Tab[]).map((t) => (
+              {(["changes", "terminal", ...(hasSetupLog ? ["setup"] : [])] as Tab[]).map((t) => (
                 <button
                   key={t}
                   onClick={() => setTab(t)}
@@ -137,9 +131,6 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
               <>
                 <div className={clsx("min-h-0 flex-1", tab !== "changes" && "hidden")}>
                   <ChangesPanel key={ws.id} workspaceId={ws.id} sessionId={chatId} />
-                </div>
-                <div className={clsx("min-h-0 flex-1", tab !== "checks" && "hidden")}>
-                  <VerificationPanel key={ws.id} workspace={ws} visible={tab === "checks"} />
                 </div>
                 {/* Terminals stay mounted so switching tabs never loses scrollback. */}
                 <div className={clsx("min-h-0 flex-1", tab !== "terminal" && "hidden")}>
