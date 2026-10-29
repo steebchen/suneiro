@@ -1,4 +1,7 @@
 #![cfg(unix)]
+#[path = "support/delegation_evidence.rs"]
+mod evidence;
+use evidence::{reports_evidence, reports_permission, SmokeShutdown};
 use std::{path::Path, sync::Arc, time::Duration};
 use suneiro_core::{
     delegation::{Isolation, Relation, TaskBase, TaskRequest},
@@ -148,19 +151,107 @@ async fn stdio_mcp_discovery_and_missing_auth_fail_honestly() {
 #[tokio::test]
 #[ignore = "opt-in: uses an authenticated real agent and its tokens; SUNEIRO_DELEGATION_AGENT=claude|codex|opencode"]
 async fn real_adapter_can_use_local_mcp_tools() {
-    let (_tmp, core, parent) = fixture(false).await;
+    use std::sync::Mutex;
     let agent = std::env::var("SUNEIRO_DELEGATION_AGENT").expect("explicit real agent selection required");
-    let workspace = core.store.session(&parent).unwrap().workspace_id;
-    let session = core.create_session(&workspace, &agent, None, None).unwrap();
-    core.agents
-        .prompt_brief(
-            &session.id,
-            "Use the suneiro_reports MCP tool once, then reply exactly BRIDGE_REPORTS_OK. Do not claim success if the tool is unavailable."
-                .into(),
-        )
-        .unwrap();
-    wait(|| !core.agents.is_running(&session.id)).await;
-    let history = core.store.events(&session.id).unwrap();
-    assert!(history.iter().any(|v| v.to_string().contains("suneiro_reports")), "actual tool invocation must appear in ACP history");
-    core.shutdown();
+    assert!(matches!(agent.as_str(), "codex" | "opencode" | "claude"), "unknown real agent");
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("empty-fixture");
+    std::fs::create_dir(&repo).unwrap();
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "test@example.com"],
+        &["config", "user.name", "Fixture"],
+        &["commit", "--allow-empty", "-qm", "fixture"],
+    ] {
+        git::git(&repo, args).await.unwrap();
+    }
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    let core = Core::new(&tmp.path().join("data"), Arc::new(move |event| sink.lock().unwrap().push(event))).unwrap();
+    let _shutdown = SmokeShutdown(core.clone());
+    core.set_delegation_executable(Path::new(env!("CARGO_BIN_EXE_suneiro-delegation-mcp"))).unwrap();
+    let mut settings = core.settings();
+    settings.plan_by_default = true;
+    settings.rename_branches = false;
+    settings.workspaces_root = tmp.path().join("workspaces").to_string_lossy().into();
+    core.save_settings(&settings).unwrap();
+    let repository = core.add_repo(repo.to_str().unwrap()).await.unwrap();
+    let ws = core.create_workspace(&repository.id).await.unwrap();
+    wait(|| core.store.workspace(&ws.id).unwrap().status == "ready").await;
+    let model = std::env::var("SUNEIRO_DELEGATION_MODEL").ok();
+    let effort = std::env::var("SUNEIRO_DELEGATION_EFFORT").ok();
+    let session = core.create_session(&ws.id, &agent, model, effort).unwrap();
+    core.agents.prompt_brief(&session.id,"Read-only MCP qualification in a disposable empty repository. Call exactly the suneiro_reports tool from the suneiro-delegation MCP server once, with no arguments. Do not use shell, filesystem, network, planning, delegation creation, or any other tool. If that tool succeeds, reply exactly BRIDGE_REPORTS_OK. If unavailable or failed, reply BRIDGE_REPORTS_UNAVAILABLE and briefly explain; never emit the success marker without actually calling it.".into()).unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(150), async {
+        let mut cursor = 0;
+        let mut approved = false;
+        loop {
+            let pending = {
+                let log = events.lock().unwrap();
+                let batch = log[cursor..].to_vec();
+                cursor = log.len();
+                batch
+            };
+            for event in pending {
+                match event {
+                    suneiro_core::Event::PermissionRequest { session_id, request_id, tool_call, .. } => {
+                        eprintln!(
+                            "permission method=session/request_permission tool={}",
+                            tool_call.get("title").unwrap_or(&serde_json::Value::Null)
+                        );
+                        let option = {
+                            let log = events.lock().unwrap();
+                            if !approved && session_id == session.id && reports_permission(&log, &session.id, &tool_call) {
+                                log.iter().find_map(|event| match event {
+                                    suneiro_core::Event::PermissionRequest { session_id: owner, request_id: id, options, .. }
+                                        if owner == &session.id && id == &request_id =>
+                                    {
+                                        options
+                                            .as_array()
+                                            .and_then(|options| options.iter().find(|option| option["kind"] == "allow_once"))
+                                            .and_then(|option| option["optionId"].as_str())
+                                            .map(str::to_string)
+                                    }
+                                    _ => None,
+                                })
+                            } else {
+                                None
+                            }
+                        };
+                        approved |= option.is_some();
+                        eprintln!("permission scoped_reports_allow_once={}", option.is_some());
+                        core.agents.respond_permission(&session_id, &request_id, option).await.unwrap();
+                    }
+                    suneiro_core::Event::Question { session_id, request_id, .. } => {
+                        core.agents.answer_question(&session_id, &request_id, serde_json::json!({"action":"cancel"})).await.unwrap();
+                    }
+                    _ => {}
+                }
+            }
+            if !core.agents.is_running(&session.id) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await;
+    let log = events.lock().unwrap().clone();
+    for event in &log {
+        match event {
+            suneiro_core::Event::SessionUpdate { session_id, update } if session_id == &session.id => {
+                let kind = update["sessionUpdate"].as_str().unwrap_or("");
+                if matches!(kind, "tool_call" | "tool_call_update" | "agent_message_chunk") {
+                    eprintln!("ACP method=session/update update={update}");
+                }
+            }
+            suneiro_core::Event::SessionState { session_id, state, error } if session_id == &session.id => {
+                eprintln!("state={state} error={error:?}")
+            }
+            _ => {}
+        }
+    }
+    assert!(result.is_ok(), "bounded real MCP qualification timed out; no retry");
+    let (tool, marker) = reports_evidence(&log, &session.id);
+    assert!(tool, "missing completed ACP tool_call/rawInput identity for suneiro_reports; plain text is not evidence");
+    assert!(marker, "missing exact BRIDGE_REPORTS_OK assistant result");
 }
