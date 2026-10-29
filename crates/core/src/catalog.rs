@@ -120,7 +120,10 @@ pub async fn discover(def: &AgentDef) -> Result<Catalog> {
         let r = conn
             .request("session/new", json!({"cwd": dir.to_string_lossy(), "mcpServers": []}))
             .await?;
-        from_config(&r["configOptions"]).ok_or_else(|| anyhow!("{} reported no models", def.name))
+        from_config(&r["configOptions"]).ok_or_else(|| {
+            if def.id == "opencode" { anyhow!(crate::opencode::NO_MODELS) }
+            else { anyhow!("{} reported no models", def.name) }
+        })
     })
     .await
     .map_err(|_| anyhow!("{} took too long to start", def.name))?;

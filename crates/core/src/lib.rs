@@ -7,6 +7,7 @@ pub mod agent;
 pub mod attachments;
 pub mod catalog;
 pub mod capabilities;
+pub mod opencode;
 pub mod env;
 pub mod events;
 pub mod forge;

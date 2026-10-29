@@ -1,0 +1,21 @@
+{
+  "sessionId": "opencode-fixture",
+  "configOptions": [
+    {
+      "id": "model", "name": "Model", "category": "model", "type": "select",
+      "currentValue": "opencode/big-pickle",
+      "options": [
+        { "value": "opencode/big-pickle", "name": "OpenCode/Big Pickle" },
+        { "value": "local/model-with/slash", "name": "Local/Model" }
+      ]
+    },
+    {
+      "id": "mode", "name": "Session Mode", "category": "mode", "type": "select",
+      "currentValue": "build",
+      "options": [
+        { "value": "build", "name": "build", "description": "The default agent. Executes tools based on configured permissions." },
+        { "value": "plan", "name": "plan", "description": "Plan mode. Disallows all edit tools." }
+      ]
+    }
+  ]
+}

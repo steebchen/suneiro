@@ -279,13 +279,31 @@ impl Agents {
             *s.acp_session_id.lock() = Some(id.to_string());
             response
         };
+        if s.agent.id == "opencode" {
+            let config = &response["configOptions"];
+            let initial = s.initial.lock().clone();
+            let validation = crate::opencode::validate_initial(
+                config,
+                initial.as_ref().and_then(|(m, _)| m.as_deref()),
+                initial.as_ref().and_then(|(_, e)| e.as_deref()),
+            );
+            if let Err(error) = validation {
+                conn.kill();
+                return Err(error);
+            }
+        }
         if let Some(opts) = response.get("configOptions").filter(|v| v.is_array()) {
             self.set_config_options(s, opts.clone());
         }
-        if is_new {
+        if is_new || (s.agent.id == "opencode" && s.initial.lock().is_some()) {
             if let Err(e) = self.apply_initial(s, &conn).await {
+                if s.agent.id == "opencode" {
+                    conn.kill();
+                    return Err(e);
+                }
                 log::warn!("could not apply initial model: {e:#}");
             }
+            if s.agent.id == "opencode" { s.initial.lock().take(); }
         }
         if let Err(e) = self.apply_mode(s, &conn).await {
             log::warn!("could not apply permission mode: {e:#}");
@@ -574,7 +592,8 @@ impl Agents {
     }
 
     async fn apply_initial(&self, s: &LiveSession, conn: &AcpConnection) -> Result<()> {
-        let Some((model, effort)) = s.initial.lock().take() else { return Ok(()) };
+        let initial = if s.agent.id == "opencode" { s.initial.lock().clone() } else { s.initial.lock().take() };
+        let Some((model, effort)) = initial else { return Ok(()) };
         let acp_id = s.acp_session_id.lock().clone().unwrap_or_default();
         // Model first: the available effort levels can depend on it.
         for (is_model, want) in [(true, model), (false, effort)] {
@@ -586,6 +605,10 @@ impl Agents {
                 } else {
                     crate::catalog::effort_option(&config)
                 };
+                if s.agent.id == "opencode" {
+                    let id = option.and_then(|o| o["id"].as_str()).unwrap_or(if is_model { "model" } else { "effort" });
+                    crate::opencode::validate_control(&config, id, &json!(want))?;
+                }
                 option.and_then(|o| {
                     let valid = crate::catalog::choices(o).iter().any(|c| c.value == want);
                     (valid && o["currentValue"] != want.as_str()).then(|| o["id"].as_str().unwrap_or("").to_string())
@@ -751,12 +774,20 @@ impl Agents {
                 if let (false, Some(list)) = (notes.is_empty(), blocks.as_array_mut()) {
                     list.push(json!({"type": "text", "text": format!("<system-reminder>\n{}\n</system-reminder>", notes.join("\n"))}));
                 }
+
                 let r = if s.closed.load(Ordering::SeqCst) || s.cancelled.load(Ordering::SeqCst) {
                     Err(anyhow!("prompt canceled before it was sent"))
                 } else {
                     conn.request("session/prompt", json!({"sessionId": acp_id, "prompt": blocks})).await
                 };
                 let r = match r { Ok(value) => conn.drain().await.map(|()| value), Err(error) => Err(error) };
+
+                let r = if s.agent.id == "opencode" {
+                    crate::opencode::prompt_result(r, !images.is_empty() && s.images.load(Ordering::SeqCst))
+                } else {
+                    r
+                };
+
                 if r.is_err() {
                     let mut pending = s.notes.lock();
                     let later = std::mem::take(&mut *pending);
@@ -957,13 +988,25 @@ impl Agents {
 
     pub async fn set_config(self: &Arc<Self>, session_id: &str, config_id: &str, value: Value) -> Result<()> {
         let s = self.get(session_id)?;
+        // A stale OpenCode loadout must not trap the chat on a failed preset.
+        if s.agent.id == "opencode" && config_id == "model" {
+            if let Some(model) = value.as_str() {
+                if let Some(initial) = s.initial.lock().as_mut() {
+                    *initial = (Some(model.to_string()), None);
+                }
+            }
+        }
         let conn = self.connect(&s).await?;
         let acp_id = s.acp_session_id.lock().clone().unwrap_or_default();
+        if s.agent.id == "opencode" {
+            crate::opencode::validate_control(&s.config.lock(), config_id, &value)?;
+        }
         let mut params = json!({"sessionId": acp_id, "configId": config_id, "value": value});
         if value.is_boolean() {
             params["type"] = json!("boolean");
         }
         let r = conn.request("session/set_config_option", params).await?;
+        if s.agent.id == "opencode" && config_id == "model" { s.initial.lock().take(); }
         if let Some(opts) = r.get("configOptions").filter(|v| v.is_array()) {
             self.set_config_options(&s, opts.clone());
         }

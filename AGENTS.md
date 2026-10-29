@@ -30,6 +30,8 @@ crates/core/              Rust core, UI-agnostic (no Tauri dependency)
   src/title.rs            Quick heuristic titles + Haiku summaries via `claude -p`
   src/catalog.rs          Per-agent model/effort catalog, discovered from ACP
                           configOptions (short discovery session or live sessions)
+  src/opencode.rs         Native OpenCode readiness and advertised-control validation;
+                          deterministic fixtures and opt-in smoke: docs/OPENCODE.md
   src/workspace.rs        Repo config (suneiro.json / runner.json / conductor.json merged with
                           per-repo app settings), script env, workspace naming
   src/recent.rs           "Recents" for Add repository, from Claude/Codex history

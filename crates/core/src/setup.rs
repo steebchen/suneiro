@@ -189,18 +189,20 @@ pub async fn detect(id: &str) -> Option<AgentStatus> {
             }
         }
         "opencode" => {
-            if let Some((_, out)) = run("opencode", &["auth", "list"]).await {
-                let out = strip_ansi(&out);
-                let providers: Vec<String> = out
-                    .split("Environment")
-                    .next()
-                    .unwrap_or("")
-                    .lines()
-                    .filter_map(|l| l.trim_start().strip_prefix('●'))
-                    .map(|l| l.split_whitespace().take_while(|w| *w != "api" && *w != "oauth").collect::<Vec<_>>().join(" "))
-                    .collect();
+            if let Some((true, out)) = run("opencode", &["auth", "list"]).await {
+                let providers = crate::opencode::providers(&strip_ansi(&out));
                 status.logged_in = !providers.is_empty();
                 status.account = (!providers.is_empty()).then(|| providers.join(", "));
+            }
+            if !status.logged_in {
+                if let Some((true, out)) = run("opencode", &["models"]).await {
+                    status.logged_in = crate::opencode::has_models(&strip_ansi(&out));
+                    status.account = Some(if status.logged_in {
+                        "Models available; provider authentication is checked when used".into()
+                    } else {
+                        crate::opencode::NO_MODELS.into()
+                    });
+                }
             }
         }
         _ => {}
