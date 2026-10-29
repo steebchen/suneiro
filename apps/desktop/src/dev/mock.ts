@@ -221,7 +221,7 @@ const handlers: Record<string, (a: any) => any> = {
   answer_question: (a) => {
     emit(
       { type: "questionResolved", sessionId: a.sessionId, requestId: a.requestId },
-      { type: "sessionUpdate", sessionId: a.sessionId, update: { sessionUpdate: "agent_message_chunk", messageId: `ans${Date.now()}`, content: { type: "text", text: `Got it: \`${JSON.stringify(a.response)}\`` } } },
+      { type: "sessionUpdate", sessionId: a.sessionId, update: { sessionUpdate: "agent_message_chunk", messageId: `ans${Date.now()}`, content: { type: "text", text: "Thanks. I'll use your answers to continue." } } },
       { type: "turnEnd", sessionId: a.sessionId, stopReason: "end_turn", ts: 0 },
       { type: "sessionState", sessionId: a.sessionId, state: "idle", error: null },
     );
