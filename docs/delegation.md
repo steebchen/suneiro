@@ -11,10 +11,10 @@ TCP listener, network endpoint, caller-selected session, workspace path or arbit
 command is accepted. Capabilities are revoked when sessions close. This scopes the
 API; it is not an OS sandbox against another process running as the same user.
 Other core hosts explicitly opt in with `Core::set_delegation_executable`; they must
-implement the MCP flag. Windows and adapters that do not expose supplied MCP tools
-use the same manual controls in the chat's **Delegate** disclosure. Tool availability
-must be verified in the actual adapter: accepting an ACP session is not proof a
-model used a tool. No provider-parity claim is made by fixture tests.
+implement the MCP flag. Users can always open related conversations from the tab bar
+and work through ordinary chat, including when MCP tools are unavailable. Tool
+availability must be verified in the actual adapter: accepting an ACP session is not
+proof a model used a tool. No provider-parity claim is made by fixture tests.
 
 ## Operations
 
@@ -34,9 +34,10 @@ model used a tool. No provider-parity claim is made by fixture tests.
 - `suneiro_reports`: inspect assigned/created tasks and durable reports. Mailbox tools
   return `{items,nextOffset}`; use `offset` until `nextOffset` is null.
 
-Manual controls expose the exact selected brief/context, agent/model/effort, relation,
-checkout base and isolation before launch; they also inspect, message, cancel, and
-finish/report without MCP. Browser preview never pretends to launch agents.
+Ask for related work through chat. Agent-created tasks appear as compact **Chat updates**
+with progress, results, **Open chat** and **Stop**. The normal composer and model picker
+remain the interface for each conversation. Browser previews use clearly identified
+sample data and never pretend to launch real agents.
 
 ## Reliability and limits
 
@@ -121,4 +122,4 @@ extra tool calls, and the exact permission allowlist.
 These observations qualify the **reports bridge path only** for those selected
 adapters/models. They do not qualify live create/cancel/finish, other models,
 Windows, or universal provider parity; those lifecycle operations remain covered
-by deterministic bridge fixtures and manual controls.
+by deterministic bridge fixtures and direct core API tests.

@@ -1,10 +1,11 @@
-# Supervision inbox and resource controls
+# Admission and notification internals
 
-The sidebar **Inbox** collects unresolved questions, manual permissions, agent failures,
-spend warnings and delegation reports. Open an entry to jump to its exact conversation,
-including a child chat. Questions and permissions are answered in the existing chat UI,
-not dismissed or automatically approved from the inbox. Other entries can be dismissed.
-Opening an inbox conversation uses the existing unread clearing behavior.
+Questions and permissions are answered directly in chat. Tab activity and normal
+notifications identify conversations that need attention; related results appear in
+chat updates. This document describes internal admission, notification and persisted
+policy compatibility, not a separate desktop management interface. Existing saved
+pause/spend policies are preserved. When they block replies, a contextual recovery
+notice requires an explicit user action before clearing them.
 
 ## Repository admission
 

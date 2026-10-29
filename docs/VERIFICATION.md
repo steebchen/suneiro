@@ -1,11 +1,11 @@
-# Verification and review
+# Workspace safety internals
 
-Open a workspace's **Checks** panel. Configure repository commands for tests,
-lint, typecheck and build, then **Save commands**. Empty commands disable that
-preset. Commands are stored in app settings (SQLite), not discovered from agent
-output or automatically trusted from a checked-out repository. Running one is an
-explicit user action and executes the configured shell command with the user's
-login-shell environment, in the displayed workspace directory.
+The core retains revision-bound checks and restricted-session safeguards for internal
+callers and persisted sessions. These are not desktop check-preset or custom-reviewer
+setup workflows. The desktop uses ordinary chat, human diff review and the existing
+PR/terminal controls. Core tests call these APIs directly to preserve their safety
+boundaries. Configured commands are never discovered from agent output or implicitly
+trusted from a checked-out repository.
 
 Only one check runs per workspace. Agents, checkpoint restoration, commits,
 reverts, merges and archive operations cannot start over an active check. Cancel
@@ -18,14 +18,14 @@ Each run records its command, HEAD and a SHA-256 content fingerprint of tracked
 and non-ignored untracked files, including deletions, executable permissions,
 symlink targets and the staged diff. Modification times are not used. Results
 become stale when that content, HEAD or preset changes. Staleness observed during
-a run remains stale even if files are changed back. The visible panel refreshes
-freshness every two seconds; integration always checks freshness again. Ignored
+a run remains stale even if files are changed back. Core integration always checks
+freshness again. Ignored
 files such as dependencies and local environment files are not fingerprinted;
 checks are evidence about repository inputs, not a hermetic build guarantee.
 Submodules and non-regular inputs are rejected rather than falsely verified.
 
-In **Changes**, select files and launch a reviewer as a child of the selected
-conversation (subject to the configured hierarchy depth). The core requires an
+Existing restricted sessions and direct core review callers remain subject to the
+configured hierarchy depth and permissions. The core requires an
 advertised and acknowledged restricted agent mode. A read-only mode is described
 as **agent-enforced read-only**; a plan mode is explicitly described as **not
 sandboxed**, not as read-only. All ACP permission requests from reviewers are
@@ -36,13 +36,10 @@ they are not an operating-system sandbox. The selected diff is bounded to
 smoke coverage belongs to each provider's compatibility workstream; this feature
 also has a scripted ACP restriction/permission-denial test.
 
-Select failed checks and/or paste only the reviewer findings you want fixed,
-then **Send findings as new task**. This creates and starts an ordinary task chat
-using the default loadout, with only the selected context. Agent output is never
-executed as a check command. These task chats are not a separate durable
-structured delegation ledger; the delegation workstream can wrap this entrypoint.
+`Core::verification_task` is an internal literal-prompt helper for selected findings.
+It is not a desktop setup workflow. Agent output is never executed as a check command.
 
-**Integrate branch** previews a source workspace from the same repository.
+`Core::integration_preview` inspects a source workspace from the same repository.
 Both source and target must be clean and idle, with no merge conflicts, and every
 configured source preset must have a current passing result (at least one
 configured preset is required). Applying recomputes the preview under ordered

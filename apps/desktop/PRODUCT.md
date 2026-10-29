@@ -10,7 +10,7 @@ React UI inside a Tauri desktop app; macOS first.
 
 ## Product Purpose
 
-Delegate coding tasks to Claude Code, Codex and OpenCode, supervise related conversations, verify their changes and ship pull requests from one desktop app. Separate workspaces provide separate git checkouts; conversations within a workspace share files.
+Chat with Claude Code, Codex and OpenCode, keep related tasks in connected conversations, review their changes and ship pull requests from one desktop app. Separate workspaces provide separate git checkouts; conversations within a workspace share files.
 
 ## Users and Operating Context
 
@@ -18,9 +18,9 @@ Developers working across coding tasks, agent conversations, terminals and GitHu
 
 ## Capabilities and Constraints
 
-Preserve chat, workspace creation and archiving, diff review, PRs, terminals, settings and keyboard shortcuts. Add persistent parent/child conversations, explicit delegation briefs and durable reports, reusable profiles, selected-context previews, an actionable inbox, resource controls and revision-bound checks. Support system, light and dark themes. Keep existing Runner sessions, scripts and workspace paths usable.
+Chat is the main interface. Keep ordinary model selection, parent/child/sibling conversations, agent questions the user can fill out, compact updates from related tasks, human diff review, PRs, terminals, checkpoints and keyboard shortcuts. Use sensible defaults rather than setup forms. Agent profiles, context-handoff builders, custom reviewers and advanced workflow consoles are outside the product surface. Support system, light and dark themes. Keep existing sessions, scripts, saved settings and workspace paths usable.
 
-Provider capabilities differ and account limits still apply. Never present a profile's instructions or plan mode as an OS sandbox, estimated spend as an exact dollar cap, stale checks as current verification, or cross-agent context handoff as native session transfer. Isolated delegated work starts from a committed revision; uncommitted parent changes are not silently copied.
+Provider capabilities differ and account limits still apply. Questions require an explicit user answer. Plan mode is not an OS sandbox. Preserve runtime safety and restrictions on existing sessions even when their old setup controls are not part of the interface. Isolated delegated work starts from a committed revision; uncommitted parent changes are not silently copied.
 
 ## Brand Commitments
 
