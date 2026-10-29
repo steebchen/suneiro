@@ -26,6 +26,7 @@ export type Session = {
   createdAt: number;
   model: string | null;
   effort: string | null;
+  parentSessionId: string | null;
 };
 
 export type AgentDef = { id: string; name: string; command: string; args: string[] };
@@ -64,6 +65,7 @@ export type Settings = {
   editor: string;
   theme: "system" | "light" | "dark";
   renameBranches: boolean;
+  maxTabDepth: number;
 };
 
 export type AgentStatus = {
@@ -130,6 +132,9 @@ export type CoreEvent =
   | { type: "sessionConfig"; sessionId: string; configOptions: ConfigOption[] }
   | { type: "sessionCapabilities"; sessionId: string; capabilities: SessionCapabilities }
   | { type: "sessionTitle"; sessionId: string; title: string }
+  | { type: "sessionAdded"; session: Session }
+  | { type: "sessionHierarchyChanged"; sessionId: string; parentSessionId: string | null }
+  | { type: "sessionRemoved"; sessionId: string; workspaceId: string }
   | { type: "sessionMode"; sessionId: string; plan: boolean }
   | { type: "usage"; sessionId: string; usage: Usage }
   | { type: "permissionRequest"; sessionId: string; requestId: string; toolCall: any; options: PermissionOption[] }
@@ -197,6 +202,11 @@ export const api = {
   modelCatalogs: () => invoke<Record<string, Catalog>>("model_catalogs"),
   refreshCatalog: (agentId: string) => invoke<Catalog>("refresh_catalog", { agentId }),
   connectSession: (sessionId: string) => invoke<void>("connect_session", { sessionId }),
+  createChildSession: (parentSessionId: string, workspaceId: string, agentId: string, model?: string | null, effort?: string | null) =>
+    invoke<Session>("create_child_session", { parentSessionId, workspaceId, agentId, model: model ?? null, effort: effort ?? null }),
+  createSiblingSession: (siblingSessionId: string, workspaceId: string, agentId: string, model?: string | null, effort?: string | null) =>
+    invoke<Session>("create_sibling_session", { siblingSessionId, workspaceId, agentId, model: model ?? null, effort: effort ?? null }),
+  detachSession: (sessionId: string) => invoke<Session>("detach_session", { sessionId }),
   deleteSession: (sessionId: string) => invoke<void>("delete_session", { sessionId }),
   sessionEvents: (sessionId: string) => invoke<CoreEvent[]>("session_events", { sessionId }),
   sendPrompt: (sessionId: string, text: string, images: string[] = []) => invoke<void>("send_prompt", { sessionId, text, images }),

@@ -548,6 +548,7 @@ function Composer({ sessionId, workspaceId }: { sessionId: string; workspaceId: 
   const running = state === "running";
 
   useEffect(() => {
+    if (document.activeElement?.closest('[data-chat-navigation]')) return;
     ref.current?.focus();
   }, [sessionId]);
 

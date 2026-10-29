@@ -150,9 +150,33 @@ function handleEvents(events: CoreEvent[]) {
   let scriptLog = s.scriptLog;
   let changesTick = s.changesTick;
   let sessions = s.sessions;
+  let selectedSession = s.selectedSession;
   const bySession = new Map<string, CoreEvent[]>();
 
   for (const e of events) {
+    if (e.type === "sessionAdded") {
+      sessions = upsertSession(sessions, e.session);
+      views[e.session.id] ??= newView(true);
+      continue;
+    }
+    if (e.type === "sessionHierarchyChanged") {
+      for (const [ws, list] of Object.entries(sessions)) {
+        if (!list.some((x) => x.id === e.sessionId && x.parentSessionId !== e.parentSessionId)) continue;
+        sessions = { ...sessions, [ws]: list.map((x) => x.id === e.sessionId ? { ...x, parentSessionId: e.parentSessionId } : x) };
+      }
+      continue;
+    }
+    if (e.type === "sessionRemoved") {
+      const list = (sessions[e.workspaceId] ?? []).filter((x) => x.id !== e.sessionId);
+      sessions = { ...sessions, [e.workspaceId]: list };
+      if (selectedSession[e.workspaceId] === e.sessionId) {
+        selectedSession = { ...selectedSession };
+        if (list.length) selectedSession[e.workspaceId] = list[list.length - 1].id;
+        else delete selectedSession[e.workspaceId];
+      }
+      delete views[e.sessionId];
+      continue;
+    }
     if (e.type === "scriptOutput") {
       if (scriptLog === s.scriptLog) scriptLog = { ...scriptLog };
       scriptLog[e.workspaceId] = (scriptLog[e.workspaceId] ?? "") + e.data;
@@ -249,7 +273,7 @@ function handleEvents(events: CoreEvent[]) {
     }
     views[sessionId] = v;
   }
-  set({ views, scriptLog, changesTick, sessions });
+  set({ views, scriptLog, changesTick, sessions, selectedSession });
   if (changesTick !== s.changesTick) {
     for (const id of Object.keys(changesTick)) if (changesTick[id] !== s.changesTick[id]) scheduleDiffStats(id);
   }
@@ -542,29 +566,47 @@ export const actions = {
     if (sid) actions.selectSession(workspaceId, sid);
   },
 
-  async createSession(workspaceId: string, agentId: string, model?: string | null, effort?: string | null) {
-    const session = await guard(api.createSession(workspaceId, agentId, model, effort));
+  async createSession(workspaceId: string, agentId: string, model?: string | null, effort?: string | null, parentSessionId?: string | null) {
+    const session = await guard(parentSessionId
+      ? api.createChildSession(parentSessionId, workspaceId, agentId, model, effort)
+      : api.createSession(workspaceId, agentId, model, effort));
     if (!session) return;
     const s = get();
     set({
-      sessions: { ...s.sessions, [workspaceId]: [...(s.sessions[workspaceId] ?? []), session] },
+      sessions: upsertSession(s.sessions, session),
       views: { ...s.views, [session.id]: { ...newView(true), ...s.views[session.id], state: "connecting" } },
       selectedSession: { ...s.selectedSession, [workspaceId]: session.id },
     });
+    return session;
   },
 
   async closeSession(workspaceId: string, sessionId: string) {
     // A workspace always keeps at least one chat, so the view never goes blank.
     if ((get().sessions[workspaceId] ?? []).length <= 1) return;
-    await guard(api.deleteSession(sessionId));
+    const ok = await guard(api.deleteSession(sessionId).then(() => true));
+    if (!ok) return;
+    const detached: CoreEvent[] = Object.values(get().sessions).flat().filter((x) => x.parentSessionId === sessionId).map((x) => ({ type: "sessionHierarchyChanged", sessionId: x.id, parentSessionId: null }));
+    handleEvents([...detached, { type: "sessionRemoved", sessionId, workspaceId }]);
+  },
+
+  async newRelatedChat(sessionId: string, kind: "child" | "sibling", workspaceId?: string) {
     const s = get();
-    const list = (s.sessions[workspaceId] ?? []).filter((x) => x.id !== sessionId);
-    const selectedSession = { ...s.selectedSession };
-    if (selectedSession[workspaceId] === sessionId) {
-      if (list.length) selectedSession[workspaceId] = list[list.length - 1].id;
-      else delete selectedSession[workspaceId];
-    }
-    set({ sessions: { ...s.sessions, [workspaceId]: list }, selectedSession });
+    const relative = Object.values(s.sessions).flat().find((x) => x.id === sessionId);
+    if (!relative) return;
+    const target = workspaceId ?? relative.workspaceId;
+    const first = s.settings?.loadout[0];
+    const create = kind === "child" ? api.createChildSession : api.createSiblingSession;
+    const session = await guard(create(sessionId, target, first?.agent ?? s.settings?.defaultAgent ?? "claude", first?.model, first?.effort));
+    if (!session) return;
+    handleEvents([{ type: "sessionAdded", session }]);
+    actions.selectWorkspace(target);
+    actions.selectSession(target, session.id);
+    return session;
+  },
+
+  async detachSession(sessionId: string) {
+    const session = await guard(api.detachSession(sessionId));
+    if (session) handleEvents([{ type: "sessionHierarchyChanged", sessionId, parentSessionId: session.parentSessionId }]);
   },
 
   selectSession(workspaceId: string, sessionId: string) {
@@ -782,4 +824,9 @@ export function formatTokens(n: number) {
   if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
   if (n >= 1e3) return `${(n / 1e3).toFixed(n >= 1e5 ? 0 : 1)}k`;
   return String(n);
+}
+function upsertSession(sessions: Record<string, Session[]>, session: Session): Record<string, Session[]> {
+  const list = sessions[session.workspaceId] ?? [];
+  if (list.some((x) => x.id === session.id)) return sessions;
+  return { ...sessions, [session.workspaceId]: [...list, session] };
 }

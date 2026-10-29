@@ -47,6 +47,13 @@ export function Settings() {
           >
             <PricingTable />
           </Section>
+          <Section title="Chat hierarchy">
+            <Field label="Maximum child depth" hint="Roots have depth 0. Existing relationships stay intact when lowering the limit; new children must fit. Closing a parent detaches children without deleting them.">
+              <select aria-label="Maximum child depth" value={settings.maxTabDepth} onChange={(e) => void actions.saveSettings({ maxTabDepth: Number(e.target.value) })} className="rounded-md border border-border bg-bg px-2 py-1.5 text-xs">
+                {Array.from({ length: 8 }, (_, i) => i + 1).map((depth) => <option key={depth} value={depth}>{depth}</option>)}
+              </select>
+            </Field>
+          </Section>
           <Section title="Workspaces">
             <Field label="Workspaces folder" hint="New git worktrees are created here, grouped by repository.">
               <div className="flex gap-2">
