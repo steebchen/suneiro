@@ -128,6 +128,7 @@ export type CoreEvent =
   | { type: "turnEnd"; sessionId: string; stopReason: string; ts: number }
   | { type: "sessionState"; sessionId: string; state: string; error: string | null }
   | { type: "sessionConfig"; sessionId: string; configOptions: ConfigOption[] }
+  | { type: "sessionCapabilities"; sessionId: string; capabilities: SessionCapabilities }
   | { type: "sessionTitle"; sessionId: string; title: string }
   | { type: "sessionMode"; sessionId: string; plan: boolean }
   | { type: "usage"; sessionId: string; usage: Usage }
@@ -270,3 +271,4 @@ export const api = {
   },
   openPath: (path: string, appName?: string) => invoke<void>("open_path", { path, appName: appName ?? null }),
 };
+export type SessionCapabilities = { steering: boolean; images: boolean; resume: boolean; load: boolean };

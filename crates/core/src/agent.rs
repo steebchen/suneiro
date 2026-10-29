@@ -211,6 +211,10 @@ impl Agents {
             )
             .await?;
         let caps = init.get("agentCapabilities").cloned().unwrap_or(Value::Null);
+        self.emitter.emit(Event::SessionCapabilities {
+            session_id: s.id.clone(),
+            capabilities: crate::capabilities::SessionCapabilities::from_initialize(&init),
+        });
         s.steering.store(
             init.pointer("/_meta/steering/supported").and_then(|v| v.as_bool()).unwrap_or(false),
             Ordering::SeqCst,

@@ -25,6 +25,7 @@ pub enum Event {
     TurnEnd { session_id: String, stop_reason: String, ts: i64 },
     SessionState { session_id: String, state: String, error: Option<String> },
     SessionConfig { session_id: String, config_options: Value },
+    SessionCapabilities { session_id: String, capabilities: crate::capabilities::SessionCapabilities },
     SessionTitle { session_id: String, title: String },
     /// Suneiro-level permission mode: plan (agent asks) or auto-accept everything.
     SessionMode { session_id: String, plan: bool },

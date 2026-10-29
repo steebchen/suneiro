@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api, type ChangedFile, type AgentDef, type AgentStatus, type Catalog, type LoadoutEntry, type ModelPrice, type PrStatus, type Settings, type Usage, type UpdateStatus, type ConfigOption, type CoreEvent, type PermissionOption, type Repo, type Session, type Workspace } from "./api";
+import { api, type ChangedFile, type AgentDef, type AgentStatus, type Catalog, type LoadoutEntry, type ModelPrice, type PrStatus, type Settings, type Usage, type UpdateStatus, type ConfigOption, type CoreEvent, type PermissionOption, type Repo, type Session, type Workspace, type SessionCapabilities } from "./api";
 import { applyEvents, emptyTranscript, type Transcript } from "./transcript";
 
 export type Permission = { requestId: string; toolCall: any; options: PermissionOption[] };
@@ -24,6 +24,7 @@ export type SessionView = {
   state: "disconnected" | "connecting" | "idle" | "running" | "error";
   error: string | null;
   config: ConfigOption[];
+  capabilities: SessionCapabilities | null;
   permissions: Permission[];
   questions: PendingQuestion[];
   /** history loaded from disk (or session created in this run) */
@@ -45,6 +46,7 @@ const newView = (loaded: boolean): SessionView => ({
   state: "disconnected",
   error: null,
   config: [],
+  capabilities: null,
   permissions: [],
   questions: [],
   loaded,
@@ -192,6 +194,9 @@ function handleEvents(events: CoreEvent[]) {
         case "sessionState":
           v.state = e.state as SessionView["state"];
           v.error = e.error;
+          break;
+        case "sessionCapabilities":
+          v.capabilities = e.capabilities;
           break;
         case "sessionConfig":
           v.config = e.configOptions;

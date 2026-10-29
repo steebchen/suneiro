@@ -352,10 +352,7 @@ function RestoreButton({ sessionId, commit }: { sessionId: string; commit: strin
 function QueuedMessage({ sessionId, index, item }: { sessionId: string; index: number; item: Queued }) {
   const { text, images } = item;
   const running = useStore((s) => s.views[sessionId]?.state === "running");
-  const canSteer = useStore((s) => {
-    const agent = Object.values(s.sessions).flat().find((x) => x.id === sessionId)?.agentId;
-    return agent === "claude" || agent === "codex";
-  });
+  const canSteer = useStore((s) => s.views[sessionId]?.capabilities?.steering);
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(text);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -434,9 +431,11 @@ function QueuedMessage({ sessionId, index, item }: { sessionId: string; index: n
           onClick={() => actions.steerQueued(sessionId, index)}
           className="flex shrink-0 items-center gap-1 rounded px-1 py-0.5 text-[11px] text-faint hover:bg-hover hover:text-fg"
           title={
-            canSteer
+            canSteer === true
               ? "Send now: the agent picks it up immediately, without stopping"
-              : "Send now: stops the agent's current turn and sends this"
+              : canSteer === false
+                ? "Send now: stops the agent's current turn and sends this"
+                : "Send now: may stop the current turn if live steering is unavailable"
           }
         >
           <CornerDownLeft size={11} /> Send now
@@ -566,6 +565,7 @@ function Composer({ sessionId, workspaceId }: { sessionId: string; workspaceId: 
   const [suggestIndex, setSuggestIndex] = useState(0);
 
   const images = useStore((s) => s.attachments[sessionId]) ?? EMPTY_IMAGES;
+  const imageInput = useStore((s) => s.views[sessionId]?.capabilities?.images);
   const canSend = !!draft.trim() || images.length > 0;
   const send = () => {
     const text = draft.trim();
@@ -789,7 +789,7 @@ function Composer({ sessionId, workspaceId }: { sessionId: string; workspaceId: 
           <ConfigControl key={c.id} sessionId={sessionId} option={c} />
         ))}
         <div className="flex-1" />
-        <button onClick={() => void pickImages()} title="Attach images (or paste / drop them)" className="shrink-0 rounded p-1 text-faint hover:bg-hover hover:text-fg">
+        <button onClick={() => void pickImages()} title={imageInput === false ? "Attach image files (sent as file links; this agent does not advertise image input)" : "Attach images (paste or drop; image understanding depends on the selected model)"} className="shrink-0 rounded p-1 text-faint hover:bg-hover hover:text-fg">
           <Paperclip size={13} />
         </button>
         <SessionCost sessionId={sessionId} />

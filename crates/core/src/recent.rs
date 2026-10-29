@@ -103,7 +103,7 @@ pub fn recent_projects(exclude: &[String], limit: usize) -> Vec<RecentProject> {
     let temp = std::env::temp_dir();
     let mut candidates = claude_candidates(&home);
     candidates.extend(codex_candidates(&home, 400));
-    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+    candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.1));
 
     let exclude: HashSet<PathBuf> = exclude.iter().map(PathBuf::from).collect();
     let mut seen_paths = HashSet::new();

@@ -68,6 +68,12 @@ async fn prompt_permission_config_and_resume() {
     .await;
     // Live config also feeds the model catalog.
     assert_eq!(core.catalogs()["fake"].models.len(), 2);
+    assert!(log.lock().iter().any(|event| matches!(
+        event,
+        Event::SessionCapabilities { session_id, capabilities }
+            if session_id == &sid && capabilities.steering && capabilities.resume
+                && !capabilities.images && !capabilities.load
+    )));
 
     // Default mode auto-accepts: the agent's permission request never reaches the UI.
     core.agents.prompt(&sid, "do the thing".into()).unwrap();

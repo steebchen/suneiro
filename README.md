@@ -2,7 +2,7 @@
 
 <img src="apps/desktop/public/suneiro-mark.svg" alt="Suneiro" width="72" height="72" />
 
-Run Claude Code, Codex and OpenCode in parallel, each in its own git worktree, then review the diffs and ship PRs from one fast desktop app.
+Run Claude Code, Codex and OpenCode in parallel workspaces, review their changes and ship PRs from one desktop app. Each workspace has its own git checkout; chats within a workspace share its files.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/workspace-dark.png" />
@@ -14,7 +14,7 @@ Suneiro uses the agent CLIs you already have and the subscriptions you're alread
 ## Features
 
 - **Workspaces**: every task gets its own git worktree and branch, created from the latest upstream base branch. The branch is renamed after the task (`suneiro/fix-login-bug`) until it's pushed. Start from scratch, from an existing branch, or from a pull request (⇧⌘N).
-- **Agents over ACP**: Claude Code, Codex and OpenCode all speak the [Agent Client Protocol](https://agentclientprotocol.com), so the chat UI, tool calls, plans, questions, slash commands and model pickers work the same for every agent.
+- **Agents over ACP**: Claude Code, Codex and OpenCode share one interface through the [Agent Client Protocol](https://agentclientprotocol.com). Available models, tools and controls depend on the connected agent and its version. Live steering follows negotiated capabilities; otherwise “Send now” interrupts the current turn. Image input also depends on the selected model.
 - **Chat**: attach screenshots (paste, pick or drop), `@`-mention files, `/` commands, queue or steer follow-ups, recall earlier prompts with ↑, find in chat (⌘F), and restore the workspace's files to how they were before any message (checkpoints, with undo).
 - **Review**: changed files and syntax-highlighted diffs against the merge base, "viewed" marks, line comments sent back to the agent, and per-file discard. The sidebar shows each workspace's `+/−` lines.
 - **Stay in sync**: see when the base branch moved on and merge it in with one click; conflicts can be handed to the agent.
