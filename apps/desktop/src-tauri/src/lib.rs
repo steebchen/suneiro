@@ -11,6 +11,7 @@ use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{Emitter, Manager, RunEvent, State};
 
 mod updater;
+mod profiles;
 
 type Res<T> = Result<T, String>;
 
@@ -546,6 +547,11 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            profiles::list_profiles,
+            profiles::save_profiles,
+            profiles::context_messages,
+            profiles::prepare_context,
+            profiles::launch_profile,
             subscribe,
             list_agents,
             list_repos,

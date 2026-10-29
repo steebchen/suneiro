@@ -1,4 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import type { AgentProfile } from "./profiles";
 
 export type Repo = { id: string; name: string; path: string; defaultBranch: string };
 
@@ -123,6 +124,7 @@ export type PermissionOption = { optionId: string; name: string; kind: string };
 export type AcpUpdate = { sessionUpdate: string; [key: string]: any };
 
 export type CoreEvent =
+  | { type: "profilesChanged"; profiles: AgentProfile[] }
   | { type: "sessionUpdate"; sessionId: string; update: AcpUpdate }
   | { type: "userMessage"; sessionId: string; text: string; ts: number; images?: string[] }
   | { type: "checkpoint"; sessionId: string; commit: string }

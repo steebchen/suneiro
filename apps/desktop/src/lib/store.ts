@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { api, type ChangedFile, type AgentDef, type AgentStatus, type Catalog, type LoadoutEntry, type ModelPrice, type PrStatus, type Settings, type Usage, type UpdateStatus, type ConfigOption, type CoreEvent, type PermissionOption, type Repo, type Session, type Workspace, type SessionCapabilities } from "./api";
 import { applyEvents, emptyTranscript, type Transcript } from "./transcript";
+import type { AgentProfile } from "./profiles";
 
 export type Permission = { requestId: string; toolCall: any; options: PermissionOption[] };
 export type PendingQuestion = {
@@ -59,6 +60,7 @@ const newView = (loaded: boolean): SessionView => ({
 
 type State = {
   ready: boolean;
+  profiles: AgentProfile[] | null;
   agents: AgentDef[];
   repos: Repo[];
   workspaces: Workspace[];
@@ -98,6 +100,7 @@ type State = {
 
 export const useStore = create<State>(() => ({
   ready: false,
+  profiles: null,
   agents: [],
   repos: [],
   workspaces: [],
@@ -154,6 +157,7 @@ function handleEvents(events: CoreEvent[]) {
   const bySession = new Map<string, CoreEvent[]>();
 
   for (const e of events) {
+
     if (e.type === "sessionAdded") {
       sessions = upsertSession(sessions, e.session);
       views[e.session.id] ??= newView(true);
@@ -175,6 +179,11 @@ function handleEvents(events: CoreEvent[]) {
         else delete selectedSession[e.workspaceId];
       }
       delete views[e.sessionId];
+      continue;
+    }
+    if (e.type === "profilesChanged") {
+      set({ profiles: e.profiles });
+
       continue;
     }
     if (e.type === "scriptOutput") {
@@ -578,6 +587,14 @@ export const actions = {
       selectedSession: { ...s.selectedSession, [workspaceId]: session.id },
     });
     return session;
+  },
+
+  async profileLaunched(session: Session) {
+    const workspaceId = session.workspaceId;
+    const sessions = await api.listSessions(workspaceId);
+    set({ sessions: { ...get().sessions, [workspaceId]: sessions } });
+    actions.selectSession(workspaceId, session.id);
+    await actions.loadHistory(session.id);
   },
 
   async closeSession(workspaceId: string, sessionId: string) {

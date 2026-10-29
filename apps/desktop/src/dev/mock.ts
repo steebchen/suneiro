@@ -1,3 +1,5 @@
+import { profileMock } from "./profiles";
+
 // Dev-only fake backend so the UI can run in a plain browser (`pnpm dev`,
 // then open http://localhost:1420). Never bundled into the Tauri build.
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -164,7 +166,9 @@ function usageRows() {
   return rows.sort((a, b) => a.ts - b.ts);
 }
 
+const profileBackend = profileMock({ sessions, catalogs, history: sessionHistory, emit, patch });
 const handlers: Record<string, (a: any) => any> = {
+  ...profileBackend.handlers,
   subscribe: (a) => {
     events = a.channel;
     setTimeout(() => emit({ type: "sessionCapabilities", sessionId: "s1", capabilities: { steering: true, images: true, resume: true, load: false } }, { type: "sessionConfig", sessionId: "s1", configOptions: config }, { type: "sessionUpdate", sessionId: "s1", update: commands }, { type: "sessionState", sessionId: "s1", state: "idle", error: null }), 50);
@@ -195,7 +199,7 @@ const handlers: Record<string, (a: any) => any> = {
     return { ...ws };
   },
   list_sessions: (a) => structuredClone(sessions[a.workspaceId] ?? []),
-  session_events: (a) => sessionHistory(a.sessionId),
+  session_events: (a) => profileBackend.history(a.sessionId),
   get_settings: () => settings,
   save_settings: (a) => void (settings = a.settings),
   detect_agents: async () => {

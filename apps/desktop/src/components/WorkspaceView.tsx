@@ -13,6 +13,7 @@ import { PrActions } from "./PrActions";
 import { SyncBadge } from "./SyncBadge";
 import { Menu } from "./Menu";
 import { TabHierarchy } from "./TabHierarchy";
+import { ProfileLauncher } from "./ProfileDialog";
 
 type Tab = "changes" | "terminal" | "setup";
 
@@ -88,6 +89,7 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
 
       <div className="flex min-h-0 flex-1">
         <section className="flex min-w-0 flex-1 flex-col">
+          <div className="flex shrink-0 items-center justify-end border-b border-border px-2 py-1"><ProfileLauncher workspaceId={ws.id} /></div>
           <TabHierarchy workspaceId={ws.id} activeId={sessionId} />
           {sessionId === PR_TAB ? (
             <PrView workspaceId={ws.id} />

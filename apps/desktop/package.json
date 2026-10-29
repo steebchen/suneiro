@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
+    "test:profiles": "node --experimental-strip-types --test src/dev/profiles.test.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
