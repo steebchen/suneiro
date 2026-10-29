@@ -74,14 +74,35 @@ pub struct AgentStatus {
     pub logout_command: String,
 }
 
+
+async fn run_output(program: &str, args: &[&str]) -> Option<std::process::Output> {
+    tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        tokio_command(program).args(args).stdin(std::process::Stdio::null()).kill_on_drop(true).output(),
+    ).await.ok()?.ok()
+}
+
 async fn run(program: &str, args: &[&str]) -> Option<(bool, String)> {
-    let out = tokio::time::timeout(std::time::Duration::from_secs(15), tokio_command(program).args(args).stdin(std::process::Stdio::null()).output())
-        .await
-        .ok()?
-        .ok()?;
+    let out = run_output(program, args).await?;
+
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&out.stderr));
     Some((out.status.success(), text))
+}
+
+fn claude_auth_status(out: &std::process::Output) -> (bool, Option<String>) {
+    let Ok(v) = serde_json::from_slice::<Value>(&out.stdout) else { return (false, None) };
+    if !out.status.success() || v["loggedIn"].as_bool() != Some(true) {
+        return (false, None);
+    }
+    let email = v["email"].as_str();
+    let plan = v["subscriptionType"].as_str().or(v["authMethod"].as_str());
+    let account = match (email, plan) {
+        (Some(e), Some(p)) => Some(format!("{e} · {p}")),
+        (Some(e), None) => Some(e.into()),
+        (None, p) => p.map(str::to_string),
+    };
+    (true, account)
 }
 
 fn first_version(text: &str) -> Option<String> {
@@ -156,17 +177,8 @@ pub async fn detect(id: &str) -> Option<AgentStatus> {
 
     match id {
         "claude" => {
-            if let Some((_, out)) = run("claude", &["auth", "status"]).await {
-                if let Ok(v) = serde_json::from_str::<Value>(&out) {
-                    status.logged_in = v["loggedIn"].as_bool().unwrap_or(false);
-                    let email = v["email"].as_str();
-                    let plan = v["subscriptionType"].as_str().or(v["authMethod"].as_str());
-                    status.account = match (email, plan) {
-                        (Some(e), Some(p)) => Some(format!("{e} · {p}")),
-                        (Some(e), None) => Some(e.into()),
-                        (None, p) => p.map(str::to_string),
-                    };
-                }
+            if let Some(out) = run_output("claude", &["auth", "status", "--json"]).await {
+                (status.logged_in, status.account) = claude_auth_status(&out);
             }
         }
         "codex" => {
@@ -196,6 +208,32 @@ pub async fn detect(id: &str) -> Option<AgentStatus> {
     Some(status)
 }
 
+/// Read-only preflight for the pinned Claude adapter. Does not install anything,
+/// authenticate, read credential files, or start a model turn.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClaudeDiagnostics {
+    pub cli: AgentStatus,
+    pub node_version: Option<String>,
+    pub npx_version: Option<String>,
+    pub issues: Vec<String>,
+}
+
+pub async fn claude_diagnostics() -> ClaudeDiagnostics {
+    let (cli, node, npx) = tokio::join!(detect("claude"), run("node", &["--version"]), run("npx", &["--version"]));
+    let cli = cli.expect("Claude is a builtin agent");
+    let node_version = node.filter(|(ok, _)| *ok).and_then(|(_, s)| first_version(s.trim_start_matches('v')));
+    let npx_version = npx.filter(|(ok, _)| *ok).and_then(|(_, s)| first_version(&s));
+    let mut issues = Vec::new();
+    if !cli.installed { issues.push("Claude Code is missing or cannot run. Install the official CLI, then run claude auth login.".into()); }
+    else if !cli.logged_in { issues.push("Claude authentication could not be confirmed. Run claude auth status --json, then claude auth login if needed.".into()); }
+    if node_version.as_deref().and_then(|v| v.split('.').next()?.parse::<u32>().ok()).is_none_or(|major| major < 22) {
+        issues.push("The pinned Claude ACP adapter requires Node.js 22 or newer on the login-shell PATH.".into());
+    }
+    if npx_version.is_none() { issues.push("npx is missing or cannot run. Install npm alongside Node.js; the ACP adapter starts through npx.".into()); }
+    ClaudeDiagnostics { cli, node_version, npx_version, issues }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,5 +249,24 @@ mod tests {
         let s: Settings = serde_json::from_str(r#"{"defaultAgent":"codex"}"#).unwrap();
         assert_eq!(s.default_agent, "codex");
         assert_eq!(s.branch_prefix, "suneiro/");
+    }
+
+    #[tokio::test]
+    async fn claude_auth_ignores_stderr_diagnostics() {
+        let out = run_output("node", &["-e", r#"process.stdout.write(JSON.stringify({loggedIn:true,email:'test@example.invalid',subscriptionType:'max'}));process.stderr.write('warning: runtime diagnostic\n')"#]).await.unwrap();
+        assert_eq!(claude_auth_status(&out), (true, Some("test@example.invalid · max".into())));
+    }
+
+    #[tokio::test]
+    async fn claude_auth_rejects_failed_malformed_and_logged_out_probes() {
+        for script in [
+            "console.log(JSON.stringify({loggedIn:true,email:'stale@example.invalid'}));process.exitCode=1",
+            "console.log('not json')",
+            "console.log(JSON.stringify({loggedIn:false,email:'stale@example.invalid'}))",
+            "console.error(JSON.stringify({loggedIn:true}))",
+        ] {
+            let out = run_output("node", &["-e", script]).await.unwrap();
+            assert_eq!(claude_auth_status(&out), (false, None));
+        }
     }
 }
