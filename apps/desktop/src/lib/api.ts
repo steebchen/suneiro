@@ -1,6 +1,4 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-import type { AgentProfile } from "./profiles";
-
 export type Repo = { id: string; name: string; path: string; defaultBranch: string };
 
 export type Workspace = {
@@ -31,8 +29,6 @@ export type Session = {
 };
 
 export type AgentDef = { id: string; name: string; command: string; args: string[] };
-
-export type CheckPreset = { id: string; command: string };
 export type VerificationRevision = { head: string; fingerprint: string };
 export type CheckRun = {
   id: string; workspaceId: string; presetId: string; command: string; cwd: string;
@@ -40,11 +36,6 @@ export type CheckRun = {
   status: "running" | "passed" | "failed" | "cancelled";
   log: string; exitCode: number | null; stale: boolean;
 };
-export type IntegrationPreview = {
-  sourceWorkspaceId: string; target: VerificationRevision; source: VerificationRevision;
-  conflicts: string[]; diff: string; canApply: boolean;
-};
-
 export type RepoConfig = { scripts: { setup?: string | null; run?: string | null; archive?: string | null }; copy: string[] };
 
 export type Choice = { value: string; name: string; description?: string | null };
@@ -137,7 +128,6 @@ export type PermissionOption = { optionId: string; name: string; kind: string };
 export type AcpUpdate = { sessionUpdate: string; [key: string]: any };
 
 export type CoreEvent =
-  | { type: "profilesChanged"; profiles: AgentProfile[] }
   | { type: "workspaceAdded"; workspace: Workspace }
   | { type: "delegationChanged"; sessionId: string; task: DelegatedTask }
   | { type: "sessionUpdate"; sessionId: string; update: AcpUpdate }
@@ -226,17 +216,6 @@ export const api = {
   listAllWorkspaces: () => invoke<Workspace[]>("list_all_workspaces"),
   restoreWorkspace: (workspaceId: string) => invoke<Workspace>("restore_workspace", { workspaceId }),
   archiveWorkspace: (workspaceId: string) => invoke<void>("archive_workspace", { workspaceId }),
-  verificationPresets: (repoId: string) => invoke<CheckPreset[]>("verification_presets", { repoId }),
-  saveVerificationPresets: (repoId: string, presets: CheckPreset[]) => invoke<void>("save_verification_presets", { repoId, presets }),
-  verificationStatus: (workspaceId: string) => invoke<CheckRun[]>("verification_status", { workspaceId }),
-  runCheck: (workspaceId: string, presetId: string) => invoke<CheckRun>("run_check", { workspaceId, presetId }),
-  cancelCheck: (workspaceId: string, runId: string) => invoke<void>("cancel_check", { workspaceId, runId }),
-  startReview: (workspaceId: string, agentId: string, files: string[], parentSessionId?: string) =>
-    invoke<{ session: Session; protection: string }>("start_review", { workspaceId, agentId, files, parentSessionId: parentSessionId ?? null }),
-  verificationTask: (workspaceId: string, text: string) => invoke<Session>("verification_task", { workspaceId, text }),
-  integrationPreview: (workspaceId: string, sourceWorkspaceId: string) =>
-    invoke<IntegrationPreview>("integration_preview", { workspaceId, sourceWorkspaceId }),
-  integrateWorkspace: (workspaceId: string, preview: IntegrationPreview) => invoke<void>("integrate_workspace", { workspaceId, preview }),
   repoConfig: (workspaceId: string) => invoke<RepoConfig>("repo_config", { workspaceId }),
   repoSettings: (repoId: string) =>
     invoke<{ config: RepoConfig; file: { name: string; config: RepoConfig } | null }>("repo_settings", { repoId }),

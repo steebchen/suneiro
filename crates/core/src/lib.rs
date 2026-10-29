@@ -18,7 +18,6 @@ pub mod env;
 pub mod events;
 pub mod forge;
 pub mod git;
-pub mod profiles;
 pub mod pty;
 pub mod recent;
 pub mod setup;

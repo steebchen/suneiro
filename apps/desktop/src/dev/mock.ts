@@ -1,15 +1,10 @@
 
-import { profileMock } from "./profiles";
-
 import { mockSupervision } from "./supervision";
 
 
 // Dev-only fake backend so the UI can run in a plain browser (`pnpm dev`,
 // then open http://localhost:1420). Never bundled into the Tauri build.
 /* eslint-disable @typescript-eslint/no-explicit-any */
-
-import { verificationMock } from "./verification";
-
 type Channel = { id: number };
 const callbacks = new Map<number, (data: any) => void>();
 const channelIndex = new Map<number, number>();
@@ -22,16 +17,7 @@ function send(ch: Channel, message: any) {
 }
 
 let events: Channel | null = null;
-const runningSessions = new Set<string>();
-const emit = (...batch: any[]) => {
-  for (const event of batch) {
-    if (event.type === "sessionState") {
-      if (["running", "connecting"].includes(event.state)) runningSessions.add(event.sessionId);
-      else runningSessions.delete(event.sessionId);
-    }
-  }
-  if (events) send(events, [...batch, ...supervision.observe(batch)]);
-};
+const emit = (...batch: any[]) => events && send(events, [...batch, ...supervision.observe(batch)]);
 // `?update` in the URL pretends a new version is available; `?update=launch`
 // that it's installing on its own at launch.
 const updateParam = new URLSearchParams(location.search).get("update");
@@ -183,12 +169,8 @@ function usageRows() {
   return rows.sort((a, b) => a.ts - b.ts);
 }
 
-const verification = verificationMock({ workspaces, sessions, emit, scenario: new URLSearchParams(location.search).get("verification") ?? "", isRunning: (id) => (sessions[id] ?? []).some((session) => runningSessions.has(session.id)) });
-const profileBackend = profileMock({ sessions, catalogs, history: (id) => verification.histories.get(id) ?? sessionHistory(id), emit, patch });
 const handlers: Record<string, (a: any) => any> = {
-  ...profileBackend.handlers,
   ...supervision.handlers,
-  ...verification.handlers,
   delegation_tasks: () => [],
   delegation_messages: () => [],
   delegate_task: () => { throw new Error("Task launch requires the desktop backend; browser preview cannot run agents."); },
@@ -225,7 +207,7 @@ const handlers: Record<string, (a: any) => any> = {
     return { ...ws };
   },
   list_sessions: (a) => structuredClone(sessions[a.workspaceId] ?? []),
-  session_events: (a) => structuredClone(profileBackend.history(a.sessionId)),
+  session_events: (a) => structuredClone(sessionHistory(a.sessionId)),
   get_settings: () => settings,
   save_settings: (a) => void (settings = a.settings),
   detect_agents: async () => {

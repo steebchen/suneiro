@@ -243,11 +243,6 @@ impl Store {
         Ok(())
     }
 
-    /// Atomically consume an unchanged setting (e.g. a single-use approved preview).
-    pub fn consume_setting(&self, key: &str, expected: &str) -> Result<bool> {
-        Ok(self.conn.lock().execute("DELETE FROM settings WHERE key = ?1 AND value = ?2", params![key, expected])? == 1)
-    }
-
     pub fn add_workspace(&self, ws: &Workspace) -> Result<()> {
         self.conn.lock().execute(
             "INSERT INTO workspaces (id, repo_id, name, branch, base_branch, path, status, created_at, title) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",

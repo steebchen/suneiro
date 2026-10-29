@@ -134,7 +134,6 @@ pub enum Event {
     },
 
 
-    ProfilesChanged { profiles: Vec<crate::profiles::AgentProfile> },
 
 
     InboxUpdated {

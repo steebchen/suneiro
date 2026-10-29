@@ -16,8 +16,6 @@ mod supervision;
 mod delegation;
 
 mod updater;
-mod profiles;
-mod verification;
 
 type Res<T> = Result<T, String>;
 
@@ -618,11 +616,6 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
 
-            profiles::list_profiles,
-            profiles::save_profiles,
-            profiles::context_messages,
-            profiles::prepare_context,
-            profiles::launch_profile,
 
             supervision::subtree_resources,
             supervision::supervision_inbox,
@@ -633,15 +626,7 @@ pub fn run() {
             supervision::repo_resources,
 
             subscribe,
-            verification::verification_presets,
-            verification::save_verification_presets,
-            verification::verification_status,
-            verification::run_check,
-            verification::cancel_check,
-            verification::start_review,
-            verification::verification_task,
-            verification::integration_preview,
-            verification::integrate_workspace,
+
             list_agents,
             list_repos,
             add_repo,

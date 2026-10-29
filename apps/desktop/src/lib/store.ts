@@ -1,9 +1,6 @@
 import { create } from "zustand";
-import { api, type CheckRun, type ChangedFile, type AgentDef, type AgentStatus, type Catalog, type LoadoutEntry, type ModelPrice, type PrStatus, type Settings, type Usage, type UpdateStatus, type ConfigOption, type CoreEvent, type PermissionOption, type Repo, type Session, type Workspace, type SessionCapabilities } from "./api";
+import { api, type ChangedFile, type AgentDef, type AgentStatus, type Catalog, type LoadoutEntry, type ModelPrice, type PrStatus, type Settings, type Usage, type UpdateStatus, type ConfigOption, type CoreEvent, type PermissionOption, type Repo, type Session, type Workspace, type SessionCapabilities } from "./api";
 import { applyEvents, emptyTranscript, type Transcript } from "./transcript";
-
-import type { AgentProfile } from "./profiles";
-
 import { handleSupervisionEvents, loadInbox } from "./supervision";
 import { notifyOnce } from "./notifications";
 
@@ -65,7 +62,6 @@ const newView = (loaded: boolean): SessionView => ({
 
 type State = {
   ready: boolean;
-  profiles: AgentProfile[] | null;
   delegationRevision: Record<string, number>;
   agents: AgentDef[];
   repos: Repo[];
@@ -75,7 +71,6 @@ type State = {
   selectedWorkspace: string | null;
   selectedSession: Record<string, string>;
   scriptLog: Record<string, string>;
-  verification: Record<string, CheckRun[]>;
   /** bumped whenever a workspace's files may have changed */
   changesTick: Record<string, number>;
   /** lines added/removed on each workspace's branch (incl. uncommitted) */
@@ -89,7 +84,7 @@ type State = {
   attachments: Record<string, string[]>;
   settings: Settings | null;
   agentStatus: AgentStatus[] | null;
-  page: "workspace" | "settings" | "home" | "insights" | "inbox";
+  page: "workspace" | "settings" | "home" | "insights";
   /** latest PR per workspace; missing = not fetched yet, null = no PR */
   prs: Record<string, PrStatus | null>;
   /** models/efforts per agent, discovered from the agents themselves */
@@ -107,7 +102,6 @@ type State = {
 
 export const useStore = create<State>(() => ({
   ready: false,
-  profiles: null,
   delegationRevision: {},
   agents: [],
   repos: [],
@@ -117,7 +111,6 @@ export const useStore = create<State>(() => ({
   selectedWorkspace: null,
   selectedSession: {},
   scriptLog: {},
-  verification: {},
   changesTick: {},
   diffStats: {},
   toast: null,
@@ -190,11 +183,6 @@ function handleEvents(events: CoreEvent[]) {
       delete views[e.sessionId];
       continue;
     }
-    if (e.type === "profilesChanged") {
-      set({ profiles: e.profiles });
-
-      continue;
-    }
 
     if (e.type === "inboxUpdated") {
       if (!isVisible(e.item.sessionId)) void notifyOnce(e.item.id, "Suneiro — " + e.item.kind, e.item.message);
@@ -211,8 +199,6 @@ function handleEvents(events: CoreEvent[]) {
       continue;
     }
     if (e.type === "verificationChanged") {
-      const runs = get().verification[e.workspaceId] ?? [];
-      actions.setVerificationRuns(e.workspaceId, [e.run, ...runs.filter((r) => r.id !== e.run.id)]);
       continue;
     }
     if (e.type === "scriptOutput") {
@@ -594,23 +580,7 @@ export const actions = {
     if (sid) actions.selectSession(workspaceId, sid);
   },
 
-  setVerificationRuns(workspaceId: string, runs: CheckRun[]) {
-    if (JSON.stringify(get().verification[workspaceId]) === JSON.stringify(runs)) return;
-    set({ verification: { ...get().verification, [workspaceId]: runs } });
-  },
 
-  async reloadSessions(workspaceId: string, session?: Session) {
-    const list = await api.listSessions(workspaceId);
-    const views = { ...get().views };
-    for (const item of list) views[item.id] ??= newView(false);
-    if (session && !list.some((item) => item.id === session.id)) list.push(session);
-    if (session) views[session.id] ??= newView(false);
-    set({ sessions: { ...get().sessions, [workspaceId]: list }, views });
-    if (session) {
-      actions.selectSession(workspaceId, session.id);
-      await actions.loadHistory(session.id);
-    }
-  },
 
   async createSession(workspaceId: string, agentId: string, model?: string | null, effort?: string | null, parentSessionId?: string | null) {
     const session = await guard(parentSessionId
@@ -626,13 +596,6 @@ export const actions = {
     return session;
   },
 
-  async profileLaunched(session: Session) {
-    const workspaceId = session.workspaceId;
-    const sessions = await api.listSessions(workspaceId);
-    set({ sessions: { ...get().sessions, [workspaceId]: sessions } });
-    actions.selectSession(workspaceId, session.id);
-    await actions.loadHistory(session.id);
-  },
 
   async closeSession(workspaceId: string, sessionId: string) {
     // A workspace always keeps at least one chat, so the view never goes blank.
