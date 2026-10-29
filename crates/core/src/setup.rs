@@ -183,9 +183,9 @@ pub async fn detect(id: &str) -> Option<AgentStatus> {
         }
         "codex" => {
             if let Some((ok, out)) = run("codex", &["login", "status"]).await {
-                let line = out.lines().find(|l| l.contains("Logged in")).map(str::trim);
-                status.logged_in = ok && line.is_some();
-                status.account = line.map(|l| l.replace("Logged in using ", "")).filter(|_| status.logged_in);
+                let account = crate::codex::login_status(ok, &out);
+                status.logged_in = account.is_some();
+                status.account = account;
             }
         }
         "opencode" => {

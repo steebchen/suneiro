@@ -295,9 +295,9 @@ impl Agents {
         if let Some(opts) = response.get("configOptions").filter(|v| v.is_array()) {
             self.set_config_options(s, opts.clone());
         }
-        if is_new || (s.agent.id == "opencode" && s.initial.lock().is_some()) {
+        if is_new || (matches!(s.agent.id.as_str(), "opencode" | "codex") && s.initial.lock().is_some()) {
             if let Err(e) = self.apply_initial(s, &conn).await {
-                if s.agent.id == "opencode" {
+                if matches!(s.agent.id.as_str(), "opencode" | "codex") {
                     conn.kill();
                     return Err(e);
                 }
@@ -306,6 +306,10 @@ impl Agents {
             if s.agent.id == "opencode" { s.initial.lock().take(); }
         }
         if let Err(e) = self.apply_mode(s, &conn).await {
+            if s.agent.id == "codex" {
+                conn.kill();
+                return Err(e);
+            }
             log::warn!("could not apply permission mode: {e:#}");
         }
         if !conn.is_alive() || s.closed.load(Ordering::SeqCst) || s.cancelled.load(Ordering::SeqCst) {
@@ -493,10 +497,13 @@ impl Agents {
         if input + cached + output == 0 && cost.is_none() {
             return;
         }
-        let model = crate::catalog::model_option(&s.config.lock())
-            .and_then(|o| o["currentValue"].as_str().map(str::to_string))
-            .or_else(|| result.pointer("/_meta/quota/model_usage/0/model").and_then(|m| m.as_str()).map(str::to_string))
-            .unwrap_or_else(|| "unknown".into());
+        let configured = crate::catalog::model_option(&s.config.lock())
+            .and_then(|o| o["currentValue"].as_str().map(str::to_string));
+        let model = if s.agent.id == "codex" {
+            crate::codex::reported_model(result).map(str::to_string).or(configured)
+        } else {
+            configured.or_else(|| result.pointer("/_meta/quota/model_usage/0/model").and_then(|m| m.as_str()).map(str::to_string))
+        }.unwrap_or_else(|| "unknown".into());
         let Ok(ws) = self.store.workspace(&s.workspace_id) else { return };
         let record = crate::store::UsageRecord {
             session_id: s.id.clone(),
@@ -553,7 +560,11 @@ impl Agents {
 
     /// Push our plan/auto-accept choice into the agent's own config options.
     async fn apply_mode(&self, s: &LiveSession, conn: &AcpConnection) -> Result<()> {
-        let changes = mode_changes(&s.config.lock(), s.plan.load(Ordering::SeqCst));
+        let changes = if s.agent.id == "codex" {
+            crate::codex::mode_changes(&s.config.lock(), s.plan.load(Ordering::SeqCst))?
+        } else {
+            mode_changes(&s.config.lock(), s.plan.load(Ordering::SeqCst))
+        };
         if changes.is_empty() {
             return Ok(());
         }
@@ -592,8 +603,9 @@ impl Agents {
     }
 
     async fn apply_initial(&self, s: &LiveSession, conn: &AcpConnection) -> Result<()> {
-        let initial = if s.agent.id == "opencode" { s.initial.lock().clone() } else { s.initial.lock().take() };
+        let initial = if matches!(s.agent.id.as_str(), "opencode" | "codex") { s.initial.lock().clone() } else { s.initial.lock().take() };
         let Some((model, effort)) = initial else { return Ok(()) };
+        let (model, effort) = if s.agent.id == "codex" { crate::codex::preset(model, effort) } else { (model, effort) };
         let acp_id = s.acp_session_id.lock().clone().unwrap_or_default();
         // Model first: the available effort levels can depend on it.
         for (is_model, want) in [(true, model), (false, effort)] {
@@ -608,6 +620,9 @@ impl Agents {
                 if s.agent.id == "opencode" {
                     let id = option.and_then(|o| o["id"].as_str()).unwrap_or(if is_model { "model" } else { "effort" });
                     crate::opencode::validate_control(&config, id, &json!(want))?;
+                }
+                if s.agent.id == "codex" && !option.is_some_and(|o| crate::catalog::choices(o).iter().any(|c| c.value == want)) {
+                    bail!("Codex does not support requested {} `{want}` for this session", if is_model { "model" } else { "reasoning effort" });
                 }
                 option.and_then(|o| {
                     let valid = crate::catalog::choices(o).iter().any(|c| c.value == want);
@@ -624,6 +639,9 @@ impl Agents {
             if let Some(opts) = r.get("configOptions").filter(|v| v.is_array()) {
                 self.set_config_options(s, opts.clone());
             }
+        }
+        if s.agent.id == "codex" {
+            s.initial.lock().take();
         }
         Ok(())
     }
@@ -645,7 +663,14 @@ impl Agents {
         }
         let conn = s.conn.lock().await.clone();
         match conn {
-            Some(conn) => self.apply_mode(&s, &conn).await,
+            Some(conn) => {
+                let result = self.apply_mode(&s, &conn).await;
+                if s.agent.id == "codex" && result.is_err() {
+                    conn.kill();
+                    s.conn.lock().await.take();
+                }
+                result
+            }
             None => Ok(()), // applied on connect
         }
     }
@@ -1171,10 +1196,10 @@ mod tests {
             select("mode", "agent", &["read-only", "workspace-write", "agent", "agent-full-access"]),
             select("collaboration_mode", "default", &["default", "plan"]),
         ]);
-        assert_eq!(mode_changes(&config, false), vec![("mode".into(), "agent-full-access".into())]);
+        assert_eq!(crate::codex::mode_changes(&config, false).unwrap(), vec![("mode".into(), "agent-full-access".into())]);
         assert_eq!(
-            mode_changes(&config, true),
-            vec![("collaboration_mode".into(), "plan".into()), ("mode".into(), "agent-full-access".into())]
+            crate::codex::mode_changes(&config, true).unwrap(),
+            vec![("mode".into(), "read-only".into()), ("collaboration_mode".into(), "plan".into())]
         );
         assert!(!is_plan(&config));
     }
