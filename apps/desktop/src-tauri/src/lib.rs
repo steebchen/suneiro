@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use suneiro_core::{AgentDef, Core, Event, Repo, Session, Workspace};
 use serde_json::Value;
+use suneiro_core::{AgentDef, Core, Event, Repo, Session, Workspace};
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{Emitter, Manager, RunEvent, State};
 
@@ -168,14 +168,37 @@ fn list_sessions(app: State<'_, App>, workspace_id: String) -> Res<Vec<Session>>
 }
 
 #[tauri::command]
-async fn create_session(
+async fn create_session(app: State<'_, App>, workspace_id: String, agent_id: String, model: Option<String>, effort: Option<String>) -> Res<Session> {
+    app.core.create_session(&workspace_id, &agent_id, model, effort).map_err(err)
+}
+
+#[tauri::command]
+fn create_child_session(
     app: State<'_, App>,
+    parent_session_id: String,
     workspace_id: String,
     agent_id: String,
     model: Option<String>,
     effort: Option<String>,
 ) -> Res<Session> {
-    app.core.create_session(&workspace_id, &agent_id, model, effort).map_err(err)
+    app.core.create_child_session(&parent_session_id, &workspace_id, &agent_id, model, effort).map_err(err)
+}
+
+#[tauri::command]
+fn create_sibling_session(
+    app: State<'_, App>,
+    sibling_session_id: String,
+    workspace_id: String,
+    agent_id: String,
+    model: Option<String>,
+    effort: Option<String>,
+) -> Res<Session> {
+    app.core.create_sibling_session(&sibling_session_id, &workspace_id, &agent_id, model, effort).map_err(err)
+}
+
+#[tauri::command]
+fn detach_session(app: State<'_, App>, session_id: String) -> Res<Session> {
+    app.core.detach_session(&session_id).map_err(err)
 }
 
 /// Start a chat's agent without prompting (e.g. to show its model options).
@@ -226,12 +249,7 @@ async fn cancel_prompt(app: State<'_, App>, session_id: String) -> Res<()> {
 }
 
 #[tauri::command]
-async fn respond_permission(
-    app: State<'_, App>,
-    session_id: String,
-    request_id: String,
-    option_id: Option<String>,
-) -> Res<()> {
+async fn respond_permission(app: State<'_, App>, session_id: String, request_id: String, option_id: Option<String>) -> Res<()> {
     app.core.agents.respond_permission(&session_id, &request_id, option_id).await.map_err(err)
 }
 
@@ -430,11 +448,7 @@ fn save_settings(app: State<'_, App>, settings: suneiro_core::setup::Settings) -
 
 #[tauri::command]
 async fn detect_agents() -> Vec<suneiro_core::setup::AgentStatus> {
-    let (a, b, c) = tokio::join!(
-        suneiro_core::setup::detect("claude"),
-        suneiro_core::setup::detect("codex"),
-        suneiro_core::setup::detect("opencode"),
-    );
+    let (a, b, c) = tokio::join!(suneiro_core::setup::detect("claude"), suneiro_core::setup::detect("codex"), suneiro_core::setup::detect("opencode"),);
     [a, b, c].into_iter().flatten().collect()
 }
 
@@ -555,6 +569,9 @@ pub fn run() {
             save_repo_settings,
             list_sessions,
             create_session,
+            create_child_session,
+            create_sibling_session,
+            detach_session,
             delete_session,
             connect_session,
             session_events,

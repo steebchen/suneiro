@@ -37,6 +37,8 @@ pub struct Settings {
     pub theme: String,
     /// Rename a workspace's branch after its task (until it's pushed).
     pub rename_branches: bool,
+    /// Maximum parent links for a chat; roots have depth zero (1..=8).
+    pub max_tab_depth: u8,
 }
 
 impl Default for Settings {
@@ -48,15 +50,11 @@ impl Default for Settings {
             enabled_agents: vec!["claude".into(), "codex".into(), "opencode".into()],
             default_agent: "claude".into(),
             branch_prefix: "suneiro/".into(),
-            workspaces_root: dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("suneiro")
-                .join("workspaces")
-                .to_string_lossy()
-                .into_owned(),
+            workspaces_root: dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")).join("suneiro").join("workspaces").to_string_lossy().into_owned(),
             editor: "Visual Studio Code".into(),
             theme: "system".into(),
             rename_branches: true,
+            max_tab_depth: 4,
         }
     }
 }
@@ -77,13 +75,10 @@ pub struct AgentStatus {
 }
 
 async fn run(program: &str, args: &[&str]) -> Option<(bool, String)> {
-    let out = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
-        tokio_command(program).args(args).stdin(std::process::Stdio::null()).output(),
-    )
-    .await
-    .ok()?
-    .ok()?;
+    let out = tokio::time::timeout(std::time::Duration::from_secs(15), tokio_command(program).args(args).stdin(std::process::Stdio::null()).output())
+        .await
+        .ok()?
+        .ok()?;
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&out.stderr));
     Some((out.status.success(), text))

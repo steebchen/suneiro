@@ -14,10 +14,10 @@ pub mod git;
 pub mod pty;
 pub mod recent;
 pub mod setup;
+pub mod storage;
+pub mod store;
 pub mod title;
 pub mod usage;
-pub mod store;
-pub mod storage;
 pub mod workspace;
 
 use std::path::{Path, PathBuf};
@@ -33,8 +33,8 @@ pub use events::{Event, Sink};
 pub use store::{Repo, Session, Store, Workspace};
 
 use crate::env::{tokio_command, user_shell};
-use crate::store::now;
 use crate::setup::Settings;
+use crate::store::now;
 use crate::workspace::{load_file_config, merge_config, pick_name, script_env, RepoConfig};
 
 /// Stash message used to keep a workspace's uncommitted work while archived.
@@ -154,24 +154,18 @@ impl Core {
     // ---- settings ----
 
     pub fn settings(&self) -> Settings {
-        self.store
-            .setting("settings")
-            .ok()
-            .flatten()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        self.store.setting("settings").ok().flatten().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
     }
 
     pub fn save_settings(&self, settings: &Settings) -> Result<()> {
+        anyhow::ensure!((1..=8).contains(&settings.max_tab_depth), "maximum tab depth must be between 1 and 8");
         self.store.set_setting("settings", &serde_json::to_string(settings)?)
     }
 
     // ---- repos ----
 
     pub async fn add_repo(&self, path: &str) -> Result<Repo> {
-        let root = git::repo_root(Path::new(path))
-            .await
-            .map_err(|_| anyhow!("{path} is not a git repository"))?;
+        let root = git::repo_root(Path::new(path)).await.map_err(|_| anyhow!("{path} is not a git repository"))?;
         if let Some(existing) = self.store.repo_by_path(&root)? {
             return Ok(existing);
         }
@@ -275,18 +269,13 @@ impl Core {
         let taken = self.store.workspace_names(repo_id)?;
         let mut name = pick_name(&taken, now() as u64);
         let mut n = 2;
-        while git::git(&repo_path, &["rev-parse", "--verify", "--quiet", &format!("{prefix}{name}")])
-            .await
-            .is_ok()
-            || root.join(&name).exists()
-        {
+        while git::git(&repo_path, &["rev-parse", "--verify", "--quiet", &format!("{prefix}{name}")]).await.is_ok() || root.join(&name).exists() {
             name = format!("{}-{n}", pick_name(&taken, now() as u64));
             n += 1;
         }
         let path = root.join(&name);
         let new_branch = existing.is_none();
-        let (branch, base_branch, title) =
-            existing.unwrap_or_else(|| (format!("{prefix}{name}"), repo.default_branch.clone(), String::new()));
+        let (branch, base_branch, title) = existing.unwrap_or_else(|| (format!("{prefix}{name}"), repo.default_branch.clone(), String::new()));
         let ws = Workspace {
             id: uuid::Uuid::new_v4().to_string(),
             repo_id: repo.id.clone(),
@@ -319,14 +308,15 @@ impl Core {
                 Ok(Some(setup)) => {
                     this.set_status(&ws.id, "setting_up");
                     let ok = this.run_script(&ws, &repo.path, &setup).await;
-                    if ok { "ready" } else { "setup_failed" }
+                    if ok {
+                        "ready"
+                    } else {
+                        "setup_failed"
+                    }
                 }
                 Ok(None) => "ready",
                 Err(e) => {
-                    this.emitter.emit(Event::ScriptOutput {
-                        workspace_id: ws.id.clone(),
-                        data: format!("Failed to create worktree: {e:#}\n"),
-                    });
+                    this.emitter.emit(Event::ScriptOutput { workspace_id: ws.id.clone(), data: format!("Failed to create worktree: {e:#}\n") });
                     "failed"
                 }
             };
@@ -394,9 +384,7 @@ impl Core {
 
     /// Run a repo script inside the worktree, streaming output as `ScriptOutput`.
     async fn run_script(&self, ws: &Workspace, repo_path: &str, script: &str) -> bool {
-        let emit = |data: String| {
-            self.emitter.emit(Event::ScriptOutput { workspace_id: ws.id.clone(), data })
-        };
+        let emit = |data: String| self.emitter.emit(Event::ScriptOutput { workspace_id: ws.id.clone(), data });
         emit(format!("$ {script}\n"));
         let child = tokio_command(&user_shell())
             .args(["-lc", script])
@@ -476,12 +464,7 @@ impl Core {
 
     /// Scripts and files to copy set in the app for a repository.
     pub fn repo_settings(&self, repo_id: &str) -> RepoConfig {
-        self.store
-            .setting(&format!("repo_config:{repo_id}"))
-            .ok()
-            .flatten()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
+        self.store.setting(&format!("repo_config:{repo_id}")).ok().flatten().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
     }
 
     pub fn save_repo_settings(&self, repo_id: &str, config: &RepoConfig) -> Result<()> {
@@ -498,14 +481,46 @@ impl Core {
 
     /// New chat. `model`/`effort` are applied once the agent starts; plan
     /// mode follows the user's default.
-    pub fn create_session(
+    pub fn create_session(&self, workspace_id: &str, agent_id: &str, model: Option<String>, effort: Option<String>) -> Result<Session> {
+        self.create_linked_session(workspace_id, agent_id, model, effort, None)
+    }
+
+    pub fn create_child_session(
         &self,
+        parent_session_id: &str,
         workspace_id: &str,
         agent_id: &str,
         model: Option<String>,
         effort: Option<String>,
     ) -> Result<Session> {
+        self.create_linked_session(workspace_id, agent_id, model, effort, Some(parent_session_id.into()))
+    }
+
+    pub fn create_sibling_session(
+        &self,
+        sibling_session_id: &str,
+        workspace_id: &str,
+        agent_id: &str,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<Session> {
+        let sibling = self.store.session(sibling_session_id)?;
+        let source = self.store.workspace(&sibling.workspace_id)?;
+        let target = self.store.workspace(workspace_id)?;
+        anyhow::ensure!(source.repo_id == target.repo_id, "sibling chats must belong to the same repository");
+        self.create_linked_session(workspace_id, agent_id, model, effort, sibling.parent_session_id)
+    }
+
+    fn create_linked_session(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        model: Option<String>,
+        effort: Option<String>,
+        parent_session_id: Option<String>,
+    ) -> Result<Session> {
         self.agents.def(agent_id)?;
+        let settings = self.settings();
         let session = Session {
             id: uuid::Uuid::new_v4().to_string(),
             workspace_id: workspace_id.into(),
@@ -515,19 +530,33 @@ impl Core {
             created_at: now(),
             model: model.clone(),
             effort: effort.clone(),
+            parent_session_id,
         };
-        self.store.add_session(&session)?;
-        self.agents.preset(&session.id, self.settings().plan_by_default, model, effort)?;
+        self.store.add_session_with_depth(&session, settings.max_tab_depth)?;
+        self.emitter.emit(Event::SessionAdded { session: session.clone() });
+        self.agents.preset(&session.id, settings.plan_by_default, model, effort)?;
         self.agents.warm_up(&session.id);
         Ok(session)
     }
 
+    pub fn detach_session(&self, session_id: &str) -> Result<Session> {
+        self.store.detach_session(session_id)?;
+        self.emitter.emit(Event::SessionHierarchyChanged { session_id: session_id.into(), parent_session_id: None });
+        self.store.session(session_id)
+    }
+
     pub fn delete_session(&self, session_id: &str) -> Result<()> {
+        let session = self.store.session(session_id)?;
+        let children = self.store.delete_session(session_id)?;
         self.agents.close(session_id);
+        for id in children {
+            self.emitter.emit(Event::SessionHierarchyChanged { session_id: id, parent_session_id: None });
+        }
+        self.emitter.emit(Event::SessionRemoved { session_id: session_id.into(), workspace_id: session.workspace_id.clone() });
         // The chat's checkpoints go with it (in the background; it's only cleanup).
         // Refs are shared by the repo, so this works even when the workspace
         // is archived (no worktree).
-        let repo = self.store.session(session_id).and_then(|s| self.store.workspace(&s.workspace_id)).and_then(|w| self.store.repo(&w.repo_id));
+        let repo = self.store.workspace(&session.workspace_id).and_then(|w| self.store.repo(&w.repo_id));
         if let Ok(repo) = repo {
             let prefix = format!("refs/runner/checkpoints/{session_id}/");
             std::thread::spawn(move || {
@@ -539,7 +568,7 @@ impl Core {
                 }
             });
         }
-        self.store.delete_session(session_id)
+        Ok(())
     }
 
     /// Put the workspace's files back to a checkpoint taken before one of
@@ -553,9 +582,7 @@ impl Core {
         if self.agents.workspace_busy(&session.workspace_id) {
             bail!("an agent is working in this workspace; stop it first");
         }
-        git::git(&path, &["cat-file", "-e", &format!("{commit}^{{commit}}")])
-            .await
-            .map_err(|_| anyhow!("this checkpoint no longer exists"))?;
+        git::git(&path, &["cat-file", "-e", &format!("{commit}^{{commit}}")]).await.map_err(|_| anyhow!("this checkpoint no longer exists"))?;
         let undo = git::checkpoint(&path, &format!("refs/runner/checkpoints/{session_id}/{}", now())).await?;
         git::restore_checkpoint(&path, commit).await?;
         self.agents.add_note(
@@ -563,12 +590,7 @@ impl Core {
             "The user restored this workspace's files (and git HEAD) to how they were before one of their earlier \
              messages. Changes made after that point are gone; re-read files instead of relying on what you saw before.",
         );
-        self.emitter.emit(Event::CheckpointRestored {
-            session_id: session_id.into(),
-            commit: commit.into(),
-            undo: Some(undo.clone()),
-            ts: now(),
-        });
+        self.emitter.emit(Event::CheckpointRestored { session_id: session_id.into(), commit: commit.into(), undo: Some(undo.clone()), ts: now() });
         self.emitter.emit(Event::WorkspaceStatus { workspace_id: session.workspace_id, status: "dirty".into() });
         Ok(undo)
     }
@@ -612,11 +634,7 @@ impl Core {
     // ---- model catalog ----
 
     pub fn catalogs(&self) -> std::collections::HashMap<String, catalog::Catalog> {
-        self.agents
-            .defs()
-            .into_iter()
-            .filter_map(|d| catalog::load(&self.store, &d.id).map(|c| (d.id, c)))
-            .collect()
+        self.agents.defs().into_iter().filter_map(|d| catalog::load(&self.store, &d.id).map(|c| (d.id, c))).collect()
     }
 
     /// Discover an agent's models by starting it briefly (no prompt is sent).
@@ -664,11 +682,7 @@ impl Core {
             // Not a GitHub repo, gh missing or signed out: just show nothing.
             let Ok(prs) = forge::list_prs(Path::new(&repo.path)).await else { continue };
             for ws in mine {
-                let pr = prs
-                    .iter()
-                    .find(|p| p["headRefName"] == ws.branch.as_str())
-                    .cloned()
-                    .unwrap_or(Value::Null);
+                let pr = prs.iter().find(|p| p["headRefName"] == ws.branch.as_str()).cloned().unwrap_or(Value::Null);
                 let changed = self.prs.lock().get(&ws.id) != Some(&pr);
                 if changed {
                     self.prs.lock().insert(ws.id.clone(), pr.clone());
@@ -792,9 +806,7 @@ impl Core {
         if git::has_uncommitted(&path).await? {
             summary = format!("{summary}\n\nNot committed yet:\n{}", git::uncommitted_summary(&path).await?);
         }
-        title::pr_text(&summary)
-            .await
-            .ok_or_else(|| anyhow!("couldn't write a description (this uses Claude Code; is it installed and signed in?)"))
+        title::pr_text(&summary).await.ok_or_else(|| anyhow!("couldn't write a description (this uses Claude Code; is it installed and signed in?)"))
     }
 
     pub async fn push(&self, workspace_id: &str) -> Result<()> {
