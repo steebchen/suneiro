@@ -162,7 +162,7 @@ export function Chat({ sessionId, workspaceId }: { sessionId: string; workspaceI
         {permissions.map((p) => (
           <PermissionPrompt key={p.requestId} sessionId={sessionId} permission={p} />
         ))}
-        <DelegationPanel key={sessionId} sessionId={sessionId} />
+        {questions.length === 0 && permissions.length === 0 && <DelegationPanel key={sessionId} sessionId={sessionId} />}
         <Composer sessionId={sessionId} workspaceId={workspaceId} />
       </div>
     </div>
