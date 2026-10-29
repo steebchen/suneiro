@@ -10,7 +10,7 @@ React UI inside a Tauri desktop app; macOS first.
 
 ## Product Purpose
 
-Run Claude Code, Codex and OpenCode in parallel git worktrees, review their changes and ship pull requests from one desktop app.
+Delegate coding tasks to Claude Code, Codex and OpenCode, supervise related conversations, verify their changes and ship pull requests from one desktop app. Separate workspaces provide separate git checkouts; conversations within a workspace share files.
 
 ## Users and Operating Context
 
@@ -18,7 +18,9 @@ Developers working across coding tasks, agent conversations, terminals and GitHu
 
 ## Capabilities and Constraints
 
-Preserve chat, workspace creation and archiving, diff review, PRs, terminals, settings and keyboard shortcuts. Support system, light and dark themes. Keep existing Runner sessions, scripts and workspace paths usable after the rename.
+Preserve chat, workspace creation and archiving, diff review, PRs, terminals, settings and keyboard shortcuts. Add persistent parent/child conversations, explicit delegation briefs and durable reports, reusable profiles, selected-context previews, an actionable inbox, resource controls and revision-bound checks. Support system, light and dark themes. Keep existing Runner sessions, scripts and workspace paths usable.
+
+Provider capabilities differ and account limits still apply. Never present a profile's instructions or plan mode as an OS sandbox, estimated spend as an exact dollar cap, stale checks as current verification, or cross-agent context handoff as native session transfer. Isolated delegated work starts from a committed revision; uncommitted parent changes are not silently copied.
 
 ## Brand Commitments
 

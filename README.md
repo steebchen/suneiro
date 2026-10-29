@@ -16,7 +16,11 @@ Suneiro uses the agent CLIs you already have and the subscriptions you're alread
 - **Workspaces**: every task gets its own git worktree and branch, created from the latest upstream base branch. The branch is renamed after the task (`suneiro/fix-login-bug`) until it's pushed. Start from scratch, from an existing branch, or from a pull request (⇧⌘N).
 - **Agents over ACP**: Claude Code, Codex and OpenCode share one interface through the [Agent Client Protocol](https://agentclientprotocol.com). Available models, tools and controls depend on the connected agent and its version. Live steering follows negotiated capabilities; otherwise “Send now” interrupts the current turn. Image input also depends on the selected model.
 - **Chat**: attach screenshots (paste, pick or drop), `@`-mention files, `/` commands, queue or steer follow-ups, recall earlier prompts with ↑, find in chat (⌘F), and restore the workspace's files to how they were before any message (checkpoints, with undo).
-- **Review**: changed files and syntax-highlighted diffs against the merge base, "viewed" marks, line comments sent back to the agent, and per-file discard. The sidebar shows each workspace's `+/−` lines.
+- **Related chats**: persistent parent, child and sibling conversations, collapsible trees, breadcrumbs and descendant activity. Related chats can use different workspaces in the same repository; shared-workspace chats share files. Nesting defaults to four levels and can be configured.
+- **Delegation**: explicit task briefs, agent/model selection, isolated worktrees by default, scoped local MCP tools where supported, durable messages and completion reports. Isolated tasks start from the caller's committed HEAD unless another base is selected; dirty files are not copied. [Delegation and limitations](docs/delegation.md).
+- **Profiles and context**: save reusable instructions and per-agent preferences; select messages, files and diffs, preview the exact bounded brief and launch a new conversation. No hidden transcript or native session transfer. [Profiles and context](docs/profiles-context.md).
+- **Supervision**: an actionable inbox for questions, permissions, failures and delegated results; task-tree usage; repository concurrency and pause controls. Spend controls use observed or estimated costs, not exact dollar caps. [Supervision](docs/SUPERVISION.md).
+- **Review and verify**: inspect highlighted diffs, send line comments and run repository check presets tied to HEAD and workspace contents. Stale results are marked; guarded integration requires clean, idle workspaces and current passing source checks. Restricted reviewers deny permission requests; plan mode is not an OS sandbox. [Verification](docs/VERIFICATION.md).
 - **Stay in sync**: see when the base branch moved on and merge it in with one click; conflicts can be handed to the agent.
 - **Ship**: create a PR (with an AI-written title and description if you like), push with generated commit messages, view CI checks, "fix failing checks", merge, and archive merged workspaces.
 - **Terminals**: per-workspace shells and a one-click `run` script, with clickable links and an "open" button for the dev server it starts. Each workspace gets its own `SUNEIRO_PORT` range.
@@ -25,7 +29,7 @@ Suneiro uses the agent CLIs you already have and the subscriptions you're alread
 ## Requirements
 
 - macOS (Linux and Windows are planned; the core is platform-neutral)
-- Rust 1.85+, Node 20+, pnpm
+- Rust 1.85+, Node 22+, pnpm
 - `git`, and optionally `gh` (for PRs)
 - At least one agent: `claude`, `codex` or `opencode`. The Claude and Codex ACP adapters run via `npx`.
 
@@ -47,6 +51,8 @@ Real end-to-end smoke test against your installed agents:
 cargo run -p suneiro-core --example detect                 # what Suneiro sees
 cargo run -p suneiro-core --example e2e -- /path/to/repo claude
 ```
+
+Agent-specific verification and limitations: [Claude](docs/claude.md), [Codex](docs/codex.md), [OpenCode](docs/OPENCODE.md). Live tests use your installed CLI and existing login; account limits still apply. ACP timeouts never automatically replay a prompt or replace a saved conversation.
 
 ## Repository config: `suneiro.json`
 

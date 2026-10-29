@@ -337,7 +337,6 @@ impl Core {
     }
 
     /// New workspace on a fresh branch, or on `existing` (branch, base, title).
-
     async fn new_workspace(self: &Arc<Self>, repo_id: &str, existing: Option<(String, String, String)>) -> Result<Workspace> {
         self.new_workspace_at(repo_id, existing, None).await
     }
