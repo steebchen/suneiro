@@ -40,7 +40,7 @@ impl Smoke {
         let effort = std::env::var("SUNEIRO_CLAUDE_EFFORT").ok();
         core.store.add_session(&Session {
             id: sid.clone(), workspace_id: "w".into(), agent_id: "claude".into(), acp_session_id: None,
-            title: "Claude smoke".into(), created_at: 0, model: model.clone(), effort: effort.clone(),
+            title: "Claude smoke".into(), created_at: 0, model: model.clone(), effort: effort.clone(), parent_session_id: None,
         })?;
         core.agents.preset(&sid, true, model.clone(), effort.clone())?;
         core.agents.warm_up(&sid);

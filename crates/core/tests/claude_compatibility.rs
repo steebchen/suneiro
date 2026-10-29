@@ -37,7 +37,7 @@ impl Fixture {
         }).unwrap();
         // Avoid background AI titles without changing process-wide environment.
         let sid = "fixture-session".to_string();
-        core.store.add_session(&Session { id: sid.clone(), workspace_id: "w".into(), agent_id: "claude".into(), acp_session_id: None, title: "Fixture".into(), created_at: 0, model: model.map(str::to_string), effort: effort.map(str::to_string) }).unwrap();
+        core.store.add_session(&Session { id: sid.clone(), workspace_id: "w".into(), agent_id: "claude".into(), acp_session_id: None, title: "Fixture".into(), created_at: 0, model: model.map(str::to_string), effort: effort.map(str::to_string), parent_session_id: None }).unwrap();
         core.agents.preset(&sid, false, model.map(str::to_string), effort.map(str::to_string)).unwrap();
         core.agents.warm_up(&sid);
         let f = Self { core, log, sid, _dir: dir };
