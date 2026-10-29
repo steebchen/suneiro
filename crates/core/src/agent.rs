@@ -230,12 +230,22 @@ impl Agents {
         if let Some(id) = &existing {
             let params = json!({"sessionId": id, "cwd": cwd, "mcpServers": []});
             if caps.pointer("/sessionCapabilities/resume").is_some() {
-                response = conn.request("session/resume", params).await.ok();
+                response = Some(conn.request("session/resume", params).await.map_err(|error| {
+                    conn.kill();
+                    anyhow!("Could not resume the existing {} conversation; it has not been replaced. {error}", s.agent.name)
+                })?);
             } else if caps.get("loadSession").and_then(|v| v.as_bool()) == Some(true) {
-                // session/load replays history as updates; we already have it stored.
+                // session/load replays history that is already persisted locally.
                 s.replaying.store(true, Ordering::SeqCst);
-                response = conn.request("session/load", params).await.ok();
+                let loaded = conn.request("session/load", params).await;
                 conn.mark(REPLAY_DONE);
+                response = Some(loaded.map_err(|error| {
+                    conn.kill();
+                    anyhow!("Could not load the existing {} conversation; it has not been replaced. {error}", s.agent.name)
+                })?);
+            } else {
+                conn.kill();
+                bail!("{} cannot resume this conversation; start a new chat instead", s.agent.name);
             }
         }
         let is_new = response.is_none();
@@ -917,10 +927,7 @@ impl Agents {
         }
         let r = conn.request("session/set_config_option", params).await?;
         if let Some(opts) = r.get("configOptions").filter(|v| v.is_array()) {
-            self.emitter.emit(Event::SessionConfig {
-                session_id: s.id.clone(),
-                config_options: opts.clone(),
-            });
+            self.set_config_options(&s, opts.clone());
         }
         Ok(())
     }

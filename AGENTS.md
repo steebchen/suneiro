@@ -83,6 +83,7 @@ pnpm build                                 # Suneiro.app + .dmg
 pnpm bump 0.2.0                            # set the version everywhere; then tag v0.2.0 to release (docs/RELEASING.md)
 pnpm --filter desktop dev                  # UI only; open http://localhost:1420 (uses dev/mock.ts)
 cargo run -p suneiro-core --example detect  # what agent CLIs/logins Suneiro sees
+cargo run -p suneiro-core --example claude_smoke -- --check  # read-only Claude/Node/npx diagnostics; --catalog checks actual ACP startup; --run opts into billed fixture turns (docs/claude.md)
 cargo run -p suneiro-core --example e2e -- <repo> claude   # real end-to-end run
 # Real GitHub PR/checks e2e (opens, merges and closes PRs on a private fixture repo whose CI fails if a `FAIL` file exists):
 SUNEIRO_E2E_GH_REPO=steebchen/runner-e2e-test cargo test -p suneiro-core --test github_e2e -- --ignored --nocapture
