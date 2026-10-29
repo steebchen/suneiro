@@ -231,8 +231,8 @@ export const api = {
   verificationStatus: (workspaceId: string) => invoke<CheckRun[]>("verification_status", { workspaceId }),
   runCheck: (workspaceId: string, presetId: string) => invoke<CheckRun>("run_check", { workspaceId, presetId }),
   cancelCheck: (workspaceId: string, runId: string) => invoke<void>("cancel_check", { workspaceId, runId }),
-  startReview: (workspaceId: string, agentId: string, files: string[]) =>
-    invoke<{ session: Session; protection: string }>("start_review", { workspaceId, agentId, files }),
+  startReview: (workspaceId: string, agentId: string, files: string[], parentSessionId?: string) =>
+    invoke<{ session: Session; protection: string }>("start_review", { workspaceId, agentId, files, parentSessionId: parentSessionId ?? null }),
   verificationTask: (workspaceId: string, text: string) => invoke<Session>("verification_task", { workspaceId, text }),
   integrationPreview: (workspaceId: string, sourceWorkspaceId: string) =>
     invoke<IntegrationPreview>("integration_preview", { workspaceId, sourceWorkspaceId }),

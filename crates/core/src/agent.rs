@@ -609,13 +609,14 @@ impl Agents {
     async fn apply_mode(&self, s: &LiveSession, conn: &AcpConnection) -> Result<()> {
         let changes = if self.is_reviewer(&s.id) {
             let config = s.config.lock();
-            let (id, value) = reviewer_mode(&config).ok_or_else(|| anyhow!("agent does not advertise a restricted review mode"))?;
-            if option(&config, &id).is_some_and(|o| o["currentValue"] == value) { Vec::new() } else { vec![(id, value)] }
+            let modes = reviewer_modes(&config).ok_or_else(|| anyhow!("agent does not advertise a restricted review mode"))?;
+            if modes.iter().all(|(id, value)| option(&config, id).is_some_and(|o| o["currentValue"] == *value)) { Vec::new() } else { modes }
         } else if s.agent.id == "codex" {
             crate::codex::mode_changes(&s.config.lock(), s.plan.load(Ordering::SeqCst))?
         } else {
             mode_changes(&s.config.lock(), s.plan.load(Ordering::SeqCst))
         };
+
         if changes.is_empty() {
             return Ok(());
         }
@@ -635,8 +636,8 @@ impl Agents {
         s.applying_mode.store(false, Ordering::SeqCst);
         if self.is_reviewer(&s.id) {
             let config = s.config.lock();
-            let (id, value) = reviewer_mode(&config).ok_or_else(|| anyhow!("review mode unavailable"))?;
-            if !option(&config, &id).is_some_and(|o| o["currentValue"] == value) { bail!("agent did not confirm restricted review mode"); }
+            let modes = reviewer_modes(&config).ok_or_else(|| anyhow!("review mode unavailable"))?;
+            if !modes.iter().all(|(id, value)| option(&config, id).is_some_and(|o| o["currentValue"] == *value)) { bail!("agent did not confirm restricted review mode"); }
         }
         result
     }
@@ -819,6 +820,7 @@ impl Agents {
     }
 
     fn prompt_with_options(self: &Arc<Self>, session_id: &str, text: String, images: Vec<String>, expand_context: bool) -> Result<()> {
+        let expand_context = expand_context && !self.is_reviewer(session_id);
         let s = self.get(session_id)?;
         let lock = self.workspace_lock(&s.workspace_id);
         let _guard = lock.try_lock().map_err(|_| anyhow!("workspace operation is running; wait for it to finish"))?;
@@ -1184,6 +1186,16 @@ fn has_value(opt: &Value, value: &str) -> bool {
     opt["options"]
         .as_array()
         .is_some_and(|opts| opts.iter().any(|o| flat(o) || o["options"].as_array().is_some_and(|g| g.iter().any(flat))))
+}
+
+fn reviewer_modes(config: &Value) -> Option<Vec<(String, String)>> {
+    let mode = reviewer_mode(config)?;
+    let mut modes = Vec::new();
+    if option(config, "collaboration_mode").is_some_and(|o| has_value(o, "plan")) {
+        modes.push(("collaboration_mode".into(), "plan".into()));
+    }
+    modes.push(mode);
+    Some(modes)
 }
 
 fn reviewer_mode(config: &Value) -> Option<(String, String)> {

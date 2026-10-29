@@ -283,12 +283,24 @@ async fn reviewer_uses_advertised_restriction_denies_permissions_and_never_eleva
             env!("CARGO_MANIFEST_DIR")
         )],
     });
+    let parent = core
+        .create_session(&target.id, "review", None, None)
+        .unwrap();
     std::fs::write(Path::new(&target.path).join("file.txt"), "review me\n").unwrap();
     let review = core
-        .start_review(&target.id, "review", vec!["file.txt".into()])
+        .start_review(
+            &target.id,
+            "review",
+            vec!["file.txt".into()],
+            Some(&parent.id),
+        )
         .await
         .unwrap();
     assert_eq!(review.protection, "agent-enforced read-only");
+    assert_eq!(
+        review.session.parent_session_id.as_deref(),
+        Some(parent.id.as_str())
+    );
     assert!(core
         .agents
         .set_plan_mode(&review.session.id, false)
@@ -324,7 +336,12 @@ async fn reviewer_uses_advertised_restriction_denies_permissions_and_never_eleva
         ],
     });
     let plan_review = core
-        .start_review(&target.id, "plan-review", vec!["file.txt".into()])
+        .start_review(
+            &target.id,
+            "plan-review",
+            vec!["file.txt".into()],
+            Some(&parent.id),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -352,7 +369,12 @@ async fn reviewer_uses_advertised_restriction_denies_permissions_and_never_eleva
         )],
     });
     assert!(core
-        .start_review(&target.id, "unsupported", vec!["file.txt".into()])
+        .start_review(
+            &target.id,
+            "unsupported",
+            vec!["file.txt".into()],
+            Some(&parent.id)
+        )
         .await
         .is_err());
     core.shutdown();

@@ -136,7 +136,7 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
             ) : (
               <>
                 <div className={clsx("min-h-0 flex-1", tab !== "changes" && "hidden")}>
-                  <ChangesPanel key={ws.id} workspaceId={ws.id} sessionId={sessionId} />
+                  <ChangesPanel key={ws.id} workspaceId={ws.id} sessionId={chatId} />
                 </div>
                 <div className={clsx("min-h-0 flex-1", tab !== "checks" && "hidden")}>
                   <VerificationPanel key={ws.id} workspace={ws} visible={tab === "checks"} />

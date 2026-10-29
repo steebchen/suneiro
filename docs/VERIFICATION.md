@@ -24,7 +24,8 @@ files such as dependencies and local environment files are not fingerprinted;
 checks are evidence about repository inputs, not a hermetic build guarantee.
 Submodules and non-regular inputs are rejected rather than falsely verified.
 
-In **Changes**, select files and launch a reviewer. The core requires an
+In **Changes**, select files and launch a reviewer as a child of the selected
+conversation (subject to the configured hierarchy depth). The core requires an
 advertised and acknowledged restricted agent mode. A read-only mode is described
 as **agent-enforced read-only**; a plan mode is explicitly described as **not
 sandboxed**, not as read-only. All ACP permission requests from reviewers are

@@ -62,9 +62,9 @@ export function verificationMock({ workspaces, sessions, emit, scenario = "", is
     });
     return !["dirty", "conflict"].includes(scenario) && !dirty.has(id) && !dirty.has(sourceId) && sourceChecksPass;
   };
-  const createSession = (workspaceId: string, title: string, agentId: string, text: string, review: boolean): Session => {
+  const createSession = (workspaceId: string, title: string, agentId: string, text: string, review: boolean, parentSessionId: string | null = null): Session => {
     workspace(workspaceId);
-    const session: Session = { id: `verification-session-${++sequence}`, workspaceId, agentId, acpSessionId: null, title, createdAt: Date.now(), model: null, effort: null };
+    const session: Session = { id: `verification-session-${++sequence}`, workspaceId, agentId, acpSessionId: null, title, createdAt: Date.now(), model: null, effort: null, parentSessionId };
     sessions[workspaceId] = [...(sessions[workspaceId] ?? []), session];
     const history: CoreEvent[] = [
       { type: "userMessage", sessionId: session.id, text, ts: Date.now() },
@@ -125,11 +125,11 @@ export function verificationMock({ workspaces, sessions, emit, scenario = "", is
       if (run.status !== "running") return;
       run.status = "cancelled"; run.log += "Cancelled by user.\n"; run.exitCode = null; publish(run);
     },
-    start_review: ({ workspaceId, agentId, files }: { workspaceId: string; agentId: string; files: string[] }) => {
+    start_review: ({ workspaceId, agentId, files, parentSessionId = null }: { workspaceId: string; agentId: string; files: string[]; parentSessionId?: string | null }) => {
       if (!files.length) throw new Error("Select diff files to review");
       if (!["claude", "codex"].includes(agentId)) throw new Error("Agent does not support protected review");
       const protection = agentId === "codex" ? "agent-enforced read-only" : "plan mode; permissions denied; not sandboxed";
-      return { session: createSession(workspaceId, "Review selected changes", agentId, `Review only these selected files:\n${files.join("\n")}\nReport findings. All mutation permission requests are denied. Protection: ${protection}.`, true), protection };
+      return { session: createSession(workspaceId, "Review selected changes", agentId, `Review only these selected files:\n${files.join("\n")}\nReport findings. All mutation permission requests are denied. Protection: ${protection}.`, true, parentSessionId), protection };
     },
     verification_task: ({ workspaceId, text }) => {
       if (!text.trim()) throw new Error("Select findings or failures for the task");

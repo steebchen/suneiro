@@ -108,7 +108,7 @@ export function ChangesPanel({ workspaceId, sessionId }: { workspaceId: string; 
           <button className="rounded border border-border px-2 py-1 hover:bg-hover disabled:opacity-40" disabled={reviewBusy || !reviewFiles.some((path) => files.some((f) => f.path === path)) || !agents.length} onClick={async () => {
             setReviewBusy(true);
             try {
-              const result = await api.startReview(workspaceId, reviewAgent || defaultAgent || agents[0].id, reviewFiles.filter((path) => files.some((f) => f.path === path)));
+              const result = await api.startReview(workspaceId, reviewAgent || defaultAgent || agents[0].id, reviewFiles.filter((path) => files.some((f) => f.path === path)), sessionId);
               setProtection(result.protection);
               await actions.reloadSessions(workspaceId, result.session);
               toast(`Reviewer started · ${result.protection}`, "info");

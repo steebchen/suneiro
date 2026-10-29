@@ -104,7 +104,7 @@ export function VerificationPanel({ workspace, visible }: { workspace: Workspace
         <p className="text-muted">Select failures above and add only the findings you want addressed. Nothing is sent automatically.</p>
         <textarea aria-label="Selected findings and task instructions" className={`${input} min-h-24 w-full`} placeholder="Paste selected reviewer findings or write a task…" value={text} onChange={(e) => setText(e.target.value)} />
         <button className={button} disabled={!!busy || (!text.trim() && !failures.length)} onClick={() => void perform("task", async () => {
-          const body = [text.trim(), ...failures.map((run) => `Check failure: ${run.presetId}${run.stale ? " (stale result)" : ""}\nCommand: ${run.command}\ncwd: ${run.cwd}\nHEAD: ${run.revision.head}\nContent: ${run.revision.fingerprint}\n${run.log}`)].filter(Boolean).join("\n\n");
+          const body = [text.trim(), ...failures.map((run) => `Check failure: ${run.presetId}${run.stale ? " (stale result)" : ""}\nCommand: ${run.command}\ncwd: ${run.cwd}\nHEAD: ${run.revision.head}\nContent: ${run.revision.fingerprint}\n${run.log.length > 8192 ? `[Log excerpt; full output remains in the check log]\n${run.log.slice(-8192)}` : run.log}`)].filter(Boolean).join("\n\n");
           const session = await api.verificationTask(workspace.id, body);
           await actions.reloadSessions(workspace.id, session);
           setText(""); setSelected([]);

@@ -49,9 +49,15 @@ pub async fn start_review(
     workspace_id: String,
     agent_id: String,
     files: Vec<String>,
+    parent_session_id: Option<String>,
 ) -> Res<Review> {
     app.core
-        .start_review(&workspace_id, &agent_id, files)
+        .start_review(
+            &workspace_id,
+            &agent_id,
+            files,
+            parent_session_id.as_deref(),
+        )
         .await
         .map_err(err)
 }
