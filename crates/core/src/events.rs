@@ -106,6 +106,7 @@ pub enum Event {
         branch: String,
     },
     /// Latest PR for the workspace's branch (`null` if none).
+
     WorkspacePr {
         workspace_id: String,
         pr: Value,
@@ -125,6 +126,9 @@ pub enum Event {
         session_id: String,
         workspace_id: String,
     },
+
+    ProfilesChanged { profiles: Vec<crate::profiles::AgentProfile> },
+
 }
 
 impl Event {

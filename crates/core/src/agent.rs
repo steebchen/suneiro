@@ -776,6 +776,15 @@ impl Agents {
 
     /// Prompt with attached images (paths of image files).
     pub fn prompt_with(self: &Arc<Self>, session_id: &str, text: String, images: Vec<String>) -> Result<()> {
+        self.prompt_with_options(session_id, text, images, true)
+    }
+
+    /// Send an approved brief literally: no implicit @file attachments or queued context.
+    pub fn prompt_brief(self: &Arc<Self>, session_id: &str, text: String) -> Result<()> {
+        self.prompt_with_options(session_id, text, Vec::new(), false)
+    }
+
+    fn prompt_with_options(self: &Arc<Self>, session_id: &str, text: String, images: Vec<String>, expand_context: bool) -> Result<()> {
         let s = self.get(session_id)?;
         if s.running.swap(true, Ordering::SeqCst) {
             bail!("agent is still working");
@@ -798,11 +807,11 @@ impl Agents {
                 let conn = this.connect(&s).await?;
                 this.checkpoint(&s).await;
                 let acp_id = s.acp_session_id.lock().clone().unwrap_or_default();
-                let mut blocks = prompt_blocks(&text, &s.cwd);
+                let mut blocks = if expand_context { prompt_blocks(&text, &s.cwd) } else { json!([{"type": "text", "text": text}]) };
                 if let Some(list) = blocks.as_array_mut() {
                     list.extend(image_blocks(&images, s.images.load(Ordering::SeqCst)));
                 }
-                let notes: Vec<String> = s.notes.lock().drain(..).collect();
+                let notes: Vec<String> = if expand_context { s.notes.lock().drain(..).collect() } else { Vec::new() };
                 if let (false, Some(list)) = (notes.is_empty(), blocks.as_array_mut()) {
                     list.push(json!({"type": "text", "text": format!("<system-reminder>\n{}\n</system-reminder>", notes.join("\n"))}));
                 }

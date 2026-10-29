@@ -35,6 +35,7 @@ crates/core/              Rust core, UI-agnostic (no Tauri dependency)
   src/workspace.rs        Repo config (suneiro.json / runner.json / conductor.json merged with
                           per-repo app settings), script env, workspace naming
   src/recent.rs           "Recents" for Add repository, from Claude/Codex history
+  src/profiles.rs         SQLite-backed agent profiles and explicit frozen context packages
   src/attachments.rs      Images attached to prompts, copied into the data dir
   src/usage.rs            Cost of usage rows: agent-reported, or estimated from
                           tokens with user prices (Settings → Pricing)
@@ -109,7 +110,11 @@ SUNEIRO_E2E_GH_REPO=steebchen/runner-e2e-test cargo test -p suneiro-core --test 
 - **Branch names:** workspaces start on `<prefix><city>`; once the first task gets its (Haiku or heuristic) title, `Agents::name_branch` renames the branch to `<prefix><slug>` unless it was pushed (upstream set or the branch exists on origin) or `Settings.rename_branches` is off, and emits `WorkspaceBranch`.
 - **Checkpoints:** before each prompt the agent layer snapshots the worktree (`git::checkpoint`: a commit of all non-ignored files, parent = HEAD, kept under `refs/runner/checkpoints/<session>/`) and emits a persisted `Checkpoint` event. `Core::restore_checkpoint` puts HEAD and files back (after taking an undo checkpoint) and queues a note for the workspace's agents with their next prompt.
 - **Permissions:** sessions auto-accept every permission request by default. Plan mode (Shift+Tab in the composer) forwards requests to the user. Agent permission pickers are hidden in the UI.
+
 - **Codex compatibility:** `codex.rs` owns safe CLI login labels, legacy `model[effort]` presets, read-only plan sandbox mapping, and reported-model attribution. Apply model before reasoning effort and reject unsupported choices instead of silently substituting. Codex plan uses both `mode=read-only` and `collaboration_mode=plan`; ordinary auto-accept retains full access. See `docs/codex.md` for deterministic fixtures, real-smoke command, observed adapter/CLI versions, and explicit live-verification limits.
+
+- **Profiles and handoffs:** `profiles.rs` stores reusable instructions and per-provider model/effort preferences in SQLite settings. `prepare_context` creates a single-use, frozen preview from explicitly selected messages, individual workspace-relative files/diffs and acceptance criteria (32 items, 16 KiB each, 64 KiB total). Secret paths, traversal, outside symlinks, binary/oversized files and cross-workspace messages are rejected. `launch_profile` starts a new conversation with `Agents::prompt_brief`; never use ordinary `prompt` for approved briefs, because it implicitly expands `@path` mentions. This packages context, not a sandbox: the launched agent retains normal workspace access.
+
 - **Platform-specific code stays isolated** (e.g. `open -a` in the Tauri layer), so Linux and Windows remain additive.
 
 ## Brand and compatibility
