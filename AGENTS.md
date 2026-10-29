@@ -9,6 +9,7 @@ Suneiro is a desktop app that runs coding agents (Claude Code, Codex, OpenCode) 
 - **Goals:** a fast, efficient UI; macOS first, but keep Linux and Windows possible; open source with paid add-ons later.
 - **Agents run on the user's own logins** (Claude subscription, ChatGPT, OpenCode auth). Suneiro never stores or proxies credentials; it only runs the official CLIs and their login commands.
 - **One protocol for all agents:** every agent speaks the Agent Client Protocol (ACP) over stdio. Claude and Codex run through adapters (`@agentclientprotocol/claude-agent-acp`, `@agentclientprotocol/codex-acp`); OpenCode is native (`opencode acp`).
+- **Runtime reliability:** ACP startup/session establishment requests time out after 60s, control requests after 30s, and writes after 10s; `session/prompt` has no turn-duration limit. Cancellation allows 5s for graceful completion before killing the connection. Timeout/disconnect never replays a prompt or replaces a saved conversation with a new one. Drain ordered incoming notifications before recording turn usage. Fault coverage: `cargo test -p suneiro-core --test acp_transport --test runtime_reliability`.
 
 ## Layout
 
