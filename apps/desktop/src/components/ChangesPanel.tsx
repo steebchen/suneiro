@@ -39,6 +39,12 @@ export function ChangesPanel({ workspaceId, sessionId }: { workspaceId: string; 
   const [files, setFiles] = useState<ChangedFile[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [comments, setComments] = useState<Comment[]>([]);
+  const [reviewFiles, setReviewFiles] = useState<string[]>([]);
+  const agents = useStore((s) => s.agents);
+  const defaultAgent = useStore((s) => s.settings?.defaultAgent);
+  const [reviewAgent, setReviewAgent] = useState("");
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [protection, setProtection] = useState<string | null>(null);
   const [diffTick, setDiffTick] = useState(0);
   const { isViewed, toggle } = useViewed(workspaceId);
   const wsPath = useStore((s) => s.workspaces.find((w) => w.id === workspaceId)?.path);
@@ -94,6 +100,23 @@ export function ChangesPanel({ workspaceId, sessionId }: { workspaceId: string; 
 
   return (
     <div className="flex h-full flex-col">
+      <div className="space-y-2 border-b border-border px-3 py-2 text-xs">
+        <div className="flex items-center gap-2">
+          <select aria-label="Reviewer agent" className="min-w-0 flex-1 rounded border border-border bg-bg px-2 py-1" value={reviewAgent || defaultAgent || agents[0]?.id || ""} onChange={(e) => setReviewAgent(e.target.value)}>
+            {agents.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+          <button className="rounded border border-border px-2 py-1 hover:bg-hover disabled:opacity-40" disabled={reviewBusy || !reviewFiles.some((path) => files.some((f) => f.path === path)) || !agents.length} onClick={async () => {
+            setReviewBusy(true);
+            try {
+              const result = await api.startReview(workspaceId, reviewAgent || defaultAgent || agents[0].id, reviewFiles.filter((path) => files.some((f) => f.path === path)));
+              setProtection(result.protection);
+              await actions.reloadSessions(workspaceId, result.session);
+              toast(`Reviewer started · ${result.protection}`, "info");
+            } catch (e) { toast(String(e)); } finally { setReviewBusy(false); }
+          }}>{reviewBusy ? "Starting…" : "Review selected files"}</button>
+        </div>
+        <p className="text-muted">Select diff files below. Reviewer permission requests are denied; unsupported agents cannot start. This is not an OS sandbox.{protection && ` Protection: ${protection}.`}</p>
+      </div>
       <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted">
         <span>
           {files.length} file{files.length === 1 ? "" : "s"} · <span className="text-add-fg">+{totals.add}</span>{" "}
@@ -135,6 +158,7 @@ export function ChangesPanel({ workspaceId, sessionId }: { workspaceId: string; 
               isViewed(f) && "opacity-55",
             )}
           >
+            <input type="checkbox" aria-label={`Select ${f.path} for review`} checked={reviewFiles.includes(f.path)} onClick={(e) => e.stopPropagation()} onChange={(e) => setReviewFiles((paths) => e.target.checked ? [...paths, f.path] : paths.filter((path) => path !== f.path))} />
             <span
               className={clsx(
                 "w-3 shrink-0 font-mono text-[10px] font-bold",
@@ -187,6 +211,15 @@ export function ChangesPanel({ workspaceId, sessionId }: { workspaceId: string; 
           <button onClick={sendComments} className="mt-1.5 rounded-md bg-accent px-2 py-1 font-medium text-accent-fg">
             Add {comments.length} comment{comments.length === 1 ? "" : "s"} to chat
           </button>
+          <button disabled={reviewBusy} onClick={async () => {
+            setReviewBusy(true);
+            try {
+              const text = `Please address these selected review findings:\n${comments.map((c) => `- ${c.path}:${c.line} — ${c.text}`).join("\n")}`;
+              const session = await api.verificationTask(workspaceId, text);
+              await actions.reloadSessions(workspaceId, session);
+              setComments([]);
+            } catch (e) { toast(String(e)); } finally { setReviewBusy(false); }
+          }} className="ml-2 mt-1.5 rounded border border-border px-2 py-1 hover:bg-hover disabled:opacity-40">Send findings as new task</button>
         </div>
       )}
       {selected && (

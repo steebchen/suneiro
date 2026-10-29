@@ -120,9 +120,26 @@ impl Agents {
         *self.core.lock() = Some(core);
     }
     fn delegation_servers(&self, session: &str) -> Value {
-        let core = self.core.lock().as_ref().and_then(|core| core.upgrade());
-        core.map(|core| core.delegation_servers(session)).unwrap_or_else(|| json!([]))
+            if self.is_reviewer(session) { return json!([]); }
+            let core = self.core.lock().as_ref().and_then(|core| core.upgrade());
+            core.map(|core| core.delegation_servers(session)).unwrap_or_else(|| json!([]))
+        }
+
+    pub(crate) async fn prepare_reviewer(self: &Arc<Self>, session_id: &str) -> Result<String> {
+        let s = self.get(session_id)?;
+        self.connect(&s).await?;
+        let config = s.config.lock();
+        let (_, value) = reviewer_mode(&config).ok_or_else(|| anyhow!("agent does not advertise a restricted review mode"))?;
+        Ok(if value == "read-only" { "agent-enforced read-only" } else { "plan mode; permissions denied; not sandboxed" }.into())
     }
+
+    pub(crate) fn is_reviewer(&self, session_id: &str) -> bool {
+        match self.store.setting(&format!("review_session:{session_id}")) {
+            Ok(value) => value.is_some(),
+            Err(_) => true,
+        }
+    }
+
     pub fn defs(&self) -> Vec<AgentDef> {
         self.defs.lock().clone()
     }
@@ -211,6 +228,7 @@ impl Agents {
             bail!("agent session was closed or canceled before connecting");
         }
         if let Some(conn) = guard.as_ref().filter(|c| c.is_alive()) {
+            if self.is_reviewer(&s.id) { self.apply_mode(s, conn).await?; }
             return Ok(conn.clone());
         }
         if !s.running.load(Ordering::SeqCst) {
@@ -332,7 +350,7 @@ impl Agents {
             if s.agent.id == "opencode" { s.initial.lock().take(); }
         }
         if let Err(e) = self.apply_mode(s, &conn).await {
-            if s.agent.id == "codex" {
+            if s.agent.id == "codex" || self.is_reviewer(&s.id) {
                 conn.kill();
                 return Err(e);
             }
@@ -385,6 +403,9 @@ impl Agents {
                 }
                 Incoming::Notification { .. } => {}
                 Incoming::Request { id, method, params } => match method.as_str() {
+                    "session/request_permission" if self.is_reviewer(&s.id) => {
+                        let _ = conn.respond(id, json!({"outcome": {"outcome": "cancelled"}})).await;
+                    }
                     "session/request_permission" if !s.plan.load(Ordering::SeqCst) => {
                         let options = params.get("options").cloned().unwrap_or(json!([]));
                         let outcome = match auto_allow_option(&options) {
@@ -566,7 +587,7 @@ impl Agents {
     /// When the user approves a plan, agents leave plan mode on their own;
     /// follow them back to auto-accept.
     fn check_plan_exit(self: &Arc<Self>, s: &Arc<LiveSession>) {
-        if !s.plan.load(Ordering::SeqCst) || s.applying_mode.load(Ordering::SeqCst) {
+        if self.is_reviewer(&s.id) || !s.plan.load(Ordering::SeqCst) || s.applying_mode.load(Ordering::SeqCst) {
             return;
         }
         if is_plan(&s.config.lock()) {
@@ -586,7 +607,11 @@ impl Agents {
 
     /// Push our plan/auto-accept choice into the agent's own config options.
     async fn apply_mode(&self, s: &LiveSession, conn: &AcpConnection) -> Result<()> {
-        let changes = if s.agent.id == "codex" {
+        let changes = if self.is_reviewer(&s.id) {
+            let config = s.config.lock();
+            let (id, value) = reviewer_mode(&config).ok_or_else(|| anyhow!("agent does not advertise a restricted review mode"))?;
+            if option(&config, &id).is_some_and(|o| o["currentValue"] == value) { Vec::new() } else { vec![(id, value)] }
+        } else if s.agent.id == "codex" {
             crate::codex::mode_changes(&s.config.lock(), s.plan.load(Ordering::SeqCst))?
         } else {
             mode_changes(&s.config.lock(), s.plan.load(Ordering::SeqCst))
@@ -608,6 +633,11 @@ impl Agents {
             }
         }
         s.applying_mode.store(false, Ordering::SeqCst);
+        if self.is_reviewer(&s.id) {
+            let config = s.config.lock();
+            let (id, value) = reviewer_mode(&config).ok_or_else(|| anyhow!("review mode unavailable"))?;
+            if !option(&config, &id).is_some_and(|o| o["currentValue"] == value) { bail!("agent did not confirm restricted review mode"); }
+        }
         result
     }
 
@@ -662,6 +692,7 @@ impl Agents {
     }
 
     pub async fn set_plan_mode(self: &Arc<Self>, session_id: &str, plan: bool) -> Result<()> {
+        if self.is_reviewer(session_id) && !plan { bail!("reviewer permissions cannot be elevated; create a task instead"); }
         let s = self.get(session_id)?;
         s.plan.store(plan, Ordering::SeqCst);
         self.emitter.emit(Event::SessionMode { session_id: s.id.clone(), plan });
@@ -789,6 +820,8 @@ impl Agents {
 
     fn prompt_with_options(self: &Arc<Self>, session_id: &str, text: String, images: Vec<String>, expand_context: bool) -> Result<()> {
         let s = self.get(session_id)?;
+        let lock = self.workspace_lock(&s.workspace_id);
+        let _guard = lock.try_lock().map_err(|_| anyhow!("workspace operation is running; wait for it to finish"))?;
         let ws = self.store.workspace(&s.workspace_id)?;
         let permit = self.admissions.admit(&self.store, session_id, &ws.repo_id)?;
         if s.running.swap(true, Ordering::SeqCst) {
@@ -809,7 +842,8 @@ impl Agents {
                 let conn = this.connect(&s).await?;
                 this.checkpoint(&s).await;
                 let acp_id = s.acp_session_id.lock().clone().unwrap_or_default();
-                let mut blocks = if expand_context { prompt_blocks(&text, &s.cwd) } else { json!([{"type": "text", "text": text}]) };
+                let literal = !expand_context || this.is_reviewer(&s.id) || this.store.setting(&format!("literal_context:{}", s.id))?.is_some();
+                let mut blocks = if literal { json!([{"type": "text", "text": text}]) } else { prompt_blocks(&text, &s.cwd) };
                 if let Some(list) = blocks.as_array_mut() {
                     list.extend(image_blocks(&images, s.images.load(Ordering::SeqCst)));
                 }
@@ -1025,6 +1059,7 @@ impl Agents {
     }
 
     pub async fn set_config(self: &Arc<Self>, session_id: &str, config_id: &str, value: Value) -> Result<()> {
+        if self.is_reviewer(session_id) { bail!("reviewer configuration is fixed; create a task instead"); }
         let s = self.get(session_id)?;
         // A stale OpenCode loadout must not trap the chat on a failed preset.
         if s.agent.id == "opencode" && config_id == "model" {
@@ -1149,6 +1184,12 @@ fn has_value(opt: &Value, value: &str) -> bool {
     opt["options"]
         .as_array()
         .is_some_and(|opts| opts.iter().any(|o| flat(o) || o["options"].as_array().is_some_and(|g| g.iter().any(flat))))
+}
+
+fn reviewer_mode(config: &Value) -> Option<(String, String)> {
+    let mode = option(config, "mode")?;
+    let value = ["read-only", "plan"].into_iter().find(|value| has_value(mode, value))?;
+    Some(("mode".into(), value.into()))
 }
 
 fn is_plan(config: &Value) -> bool {

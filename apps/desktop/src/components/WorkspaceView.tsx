@@ -8,10 +8,12 @@ import { PR_TAB, PrView } from "./PrView";
 import { api } from "../lib/api";
 import { Chat } from "./Chat";
 import { ChangesPanel } from "./ChangesPanel";
+import { VerificationPanel } from "./VerificationPanel";
 import { TerminalPanel } from "./TerminalPanel";
 import { PrActions } from "./PrActions";
 import { SyncBadge } from "./SyncBadge";
 import { Menu } from "./Menu";
+
 
 import { TabHierarchy } from "./TabHierarchy";
 import { ProfileLauncher } from "./ProfileDialog";
@@ -19,7 +21,9 @@ import { ProfileLauncher } from "./ProfileDialog";
 import { TaskResourcesButton } from "./Inbox";
 
 
-type Tab = "changes" | "terminal" | "setup";
+
+type Tab = "changes" | "checks" | "terminal" | "setup";
+
 
 export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
   const ws = useStore((s) => s.workspaces.find((w) => w.id === workspaceId));
@@ -112,7 +116,7 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
           >
             <ResizeHandle edge="left" onPointerDown={panelSize.onPointerDown} />
             <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-2">
-              {(["changes", "terminal", ...(hasSetupLog ? ["setup"] : [])] as Tab[]).map((t) => (
+              {(["changes", "checks", "terminal", ...(hasSetupLog ? ["setup"] : [])] as Tab[]).map((t) => (
                 <button
                   key={t}
                   onClick={() => setTab(t)}
@@ -132,7 +136,10 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
             ) : (
               <>
                 <div className={clsx("min-h-0 flex-1", tab !== "changes" && "hidden")}>
-                  <ChangesPanel workspaceId={ws.id} sessionId={sessionId} />
+                  <ChangesPanel key={ws.id} workspaceId={ws.id} sessionId={sessionId} />
+                </div>
+                <div className={clsx("min-h-0 flex-1", tab !== "checks" && "hidden")}>
+                  <VerificationPanel key={ws.id} workspace={ws} visible={tab === "checks"} />
                 </div>
                 {/* Terminals stay mounted so switching tabs never loses scrollback. */}
                 <div className={clsx("min-h-0 flex-1", tab !== "terminal" && "hidden")}>

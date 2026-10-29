@@ -28,6 +28,8 @@ pub mod supervision;
 pub mod title;
 pub mod usage;
 pub mod workspace;
+pub mod verification;
+pub mod review;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -133,6 +135,7 @@ pub struct Core {
     /// Workspaces with a setup/archive in progress (count per workspace).
     jobs: Arc<parking_lot::Mutex<std::collections::HashMap<String, usize>>>,
     pub delegation: Arc<delegation::Delegation>,
+    verification: verification::Runner,
 }
 
 impl Core {
@@ -160,6 +163,7 @@ impl Core {
             fetched: Default::default(),
             jobs: Default::default(),
             delegation,
+            verification: Default::default(),
         });
         core.agents.attach_core(Arc::downgrade(&core));
         core.reconcile_delegation_reports()?;
@@ -179,6 +183,7 @@ impl Core {
     }
 
     pub fn shutdown(&self) {
+        self.verification.cancel_all();
         self.agents.shutdown();
         self.terminals.kill_all();
     }
@@ -549,6 +554,9 @@ impl Core {
     }
 
     pub async fn archive_workspace(&self, workspace_id: &str) -> Result<()> {
+        let lock = self.agents.workspace_lock(workspace_id);
+        let _guard = lock.try_lock().map_err(|_| anyhow!("workspace operation already running"))?;
+        self.ensure_verification_idle(workspace_id)?;
         let ws = self.store.workspace(workspace_id)?;
         let repo = self.store.repo(&ws.repo_id)?;
         let _job = WorkspaceJob::start(&self.jobs, &ws.id);
@@ -738,10 +746,8 @@ impl Core {
         let session = self.store.session(session_id)?;
         let (_, path) = self.ws_path(&session.workspace_id)?;
         let lock = self.agents.workspace_lock(&session.workspace_id);
-        let _guard = lock.lock().await;
-        if self.agents.workspace_busy(&session.workspace_id) {
-            bail!("an agent is working in this workspace; stop it first");
-        }
+        let _guard = lock.try_lock().map_err(|_| anyhow!("workspace operation already running"))?;
+        self.ensure_verification_idle(&session.workspace_id)?;
         git::git(&path, &["cat-file", "-e", &format!("{commit}^{{commit}}")])
             .await
             .map_err(|_| anyhow!("this checkpoint no longer exists"))?;
@@ -908,11 +914,17 @@ impl Core {
     }
 
     pub async fn revert_file(&self, workspace_id: &str, file: &str) -> Result<()> {
+        let lock = self.agents.workspace_lock(workspace_id);
+        let _guard = lock.try_lock().map_err(|_| anyhow!("workspace operation already running"))?;
+        self.ensure_verification_idle(workspace_id)?;
         let (ws, path) = self.ws_path(workspace_id)?;
         git::revert_file(&path, &ws.base_branch, file).await
     }
 
     pub async fn commit_all(&self, workspace_id: &str, message: &str) -> Result<()> {
+        let lock = self.agents.workspace_lock(workspace_id);
+        let _guard = lock.try_lock().map_err(|_| anyhow!("workspace operation already running"))?;
+        self.ensure_verification_idle(workspace_id)?;
         let (_, path) = self.ws_path(workspace_id)?;
         if !git::has_uncommitted(&path).await? {
             bail!("nothing to commit");
@@ -944,10 +956,10 @@ impl Core {
 
     /// Merge the latest base branch in. Returns conflicted files, if any.
     pub async fn merge_base_branch(&self, workspace_id: &str) -> Result<Vec<String>> {
+        let lock = self.agents.workspace_lock(workspace_id);
+        let _guard = lock.try_lock().map_err(|_| anyhow!("workspace operation already running"))?;
+        self.ensure_verification_idle(workspace_id)?;
         let (ws, path) = self.ws_path(workspace_id)?;
-        if self.agents.workspace_busy(workspace_id) {
-            bail!("an agent is working in this workspace; wait for it to finish");
-        }
         self.fetch_base(&ws, &path, true).await;
         let result = git::merge_base_branch(&path, &ws.base_branch).await;
         self.emitter.emit(Event::WorkspaceStatus {
@@ -958,6 +970,9 @@ impl Core {
     }
 
     pub async fn abort_merge(&self, workspace_id: &str) -> Result<()> {
+        let lock = self.agents.workspace_lock(workspace_id);
+        let _guard = lock.try_lock().map_err(|_| anyhow!("workspace operation already running"))?;
+        self.ensure_verification_idle(workspace_id)?;
         let (ws, path) = self.ws_path(workspace_id)?;
         git::abort_merge(&path).await?;
         self.emitter.emit(Event::WorkspaceStatus {
@@ -974,6 +989,9 @@ impl Core {
 
     /// Commit pending changes (using the title as message), push, open a PR.
     pub async fn create_pr(&self, workspace_id: &str, title: &str, body: &str) -> Result<String> {
+        let lock = self.agents.workspace_lock(workspace_id);
+        let _guard = lock.try_lock().map_err(|_| anyhow!("workspace operation already running"))?;
+        self.ensure_verification_idle(workspace_id)?;
         let (ws, path) = self.ws_path(workspace_id)?;
         if git::has_uncommitted(&path).await? {
             git::commit_all(&path, title).await?;
@@ -987,6 +1005,9 @@ impl Core {
     /// Commit pending changes with a written message (falling back to the
     /// workspace title), then push.
     pub async fn commit_and_push(&self, workspace_id: &str) -> Result<()> {
+        let lock = self.agents.workspace_lock(workspace_id);
+        let _guard = lock.try_lock().map_err(|_| anyhow!("workspace operation already running"))?;
+        self.ensure_verification_idle(workspace_id)?;
         let (ws, path) = self.ws_path(workspace_id)?;
         if git::has_uncommitted(&path).await? {
             let summary = git::uncommitted_summary(&path).await?;

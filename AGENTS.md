@@ -32,6 +32,8 @@ crates/core/              Rust core, UI-agnostic (no Tauri dependency)
                           configOptions (short discovery session or live sessions)
   src/opencode.rs         Native OpenCode readiness and advertised-control validation;
                           deterministic fixtures and opt-in smoke: docs/OPENCODE.md
+  src/verification.rs     User-configured checks, bounded logs/cancellation and revision/content freshness
+  src/review.rs           Restricted selected-diff reviewers, curated tasks and guarded integration
   src/workspace.rs        Repo config (suneiro.json / runner.json / conductor.json merged with
                           per-repo app settings), script env, workspace naming
   src/recent.rs           "Recents" for Add repository, from Claude/Codex history
@@ -109,6 +111,7 @@ SUNEIRO_E2E_GH_REPO=steebchen/runner-e2e-test cargo test -p suneiro-core --test 
 - **Images:** pasted, picked or dropped images are stored by `attachments.rs` in the app data dir; prompts carry their paths (`Agents::prompt_with`) and send ACP image blocks when the agent advertises `promptCapabilities.image` (otherwise file links). `UserMessage` events keep the paths so history shows thumbnails. Real check: `cargo run -p suneiro-core --example image -- <repo> claude|codex`.
 - **Branch names:** workspaces start on `<prefix><city>`; once the first task gets its (Haiku or heuristic) title, `Agents::name_branch` renames the branch to `<prefix><slug>` unless it was pushed (upstream set or the branch exists on origin) or `Settings.rename_branches` is off, and emits `WorkspaceBranch`.
 - **Checkpoints:** before each prompt the agent layer snapshots the worktree (`git::checkpoint`: a commit of all non-ignored files, parent = HEAD, kept under `refs/runner/checkpoints/<session>/`) and emits a persisted `Checkpoint` event. `Core::restore_checkpoint` puts HEAD and files back (after taking an undo checkpoint) and queues a note for the workspace's agents with their next prompt.
+- **Verification/review:** check presets live in app settings and execute only after a user action; HEAD plus tracked/non-ignored file content and staged diff bind results. Checks hold the existing workspace file lock, block agent prompts and destructive workspace operations, and count toward activity. Reviewers require an advertised/acknowledged restricted mode, deny ACP permission requests, and cannot elevate config; plan mode is not labeled read-only. Integration recomputes both workspaces' fingerprints under ordered locks and requires clean/idle trees, no conflicts and all configured source checks passing. See `docs/VERIFICATION.md` for boundaries; keep commands in `src-tauri/src/verification.rs` thin.
 - **Permissions:** sessions auto-accept every permission request by default. Plan mode (Shift+Tab in the composer) forwards requests to the user. Agent permission pickers are hidden in the UI.
 
 

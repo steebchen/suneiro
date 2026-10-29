@@ -106,7 +106,6 @@ pub enum Event {
         branch: String,
     },
     /// Latest PR for the workspace's branch (`null` if none).
-
     WorkspacePr {
         workspace_id: String,
         pr: Value,
@@ -149,6 +148,10 @@ pub enum Event {
         controls: crate::supervision::RepoControls,
     },
 
+    VerificationChanged {
+        workspace_id: String,
+        run: crate::verification::CheckRun,
+    },
 }
 
 impl Event {

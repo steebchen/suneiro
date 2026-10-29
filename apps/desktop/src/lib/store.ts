@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api, type ChangedFile, type AgentDef, type AgentStatus, type Catalog, type LoadoutEntry, type ModelPrice, type PrStatus, type Settings, type Usage, type UpdateStatus, type ConfigOption, type CoreEvent, type PermissionOption, type Repo, type Session, type Workspace, type SessionCapabilities } from "./api";
+import { api, type CheckRun, type ChangedFile, type AgentDef, type AgentStatus, type Catalog, type LoadoutEntry, type ModelPrice, type PrStatus, type Settings, type Usage, type UpdateStatus, type ConfigOption, type CoreEvent, type PermissionOption, type Repo, type Session, type Workspace, type SessionCapabilities } from "./api";
 import { applyEvents, emptyTranscript, type Transcript } from "./transcript";
 
 import type { AgentProfile } from "./profiles";
@@ -75,6 +75,7 @@ type State = {
   selectedWorkspace: string | null;
   selectedSession: Record<string, string>;
   scriptLog: Record<string, string>;
+  verification: Record<string, CheckRun[]>;
   /** bumped whenever a workspace's files may have changed */
   changesTick: Record<string, number>;
   /** lines added/removed on each workspace's branch (incl. uncommitted) */
@@ -116,6 +117,7 @@ export const useStore = create<State>(() => ({
   selectedWorkspace: null,
   selectedSession: {},
   scriptLog: {},
+  verification: {},
   changesTick: {},
   diffStats: {},
   toast: null,
@@ -206,6 +208,11 @@ function handleEvents(events: CoreEvent[]) {
     }
     if (e.type === "delegationChanged") {
       set({ delegationRevision: { ...get().delegationRevision, [e.sessionId]: (get().delegationRevision[e.sessionId] ?? 0) + 1 } });
+      continue;
+    }
+    if (e.type === "verificationChanged") {
+      const runs = get().verification[e.workspaceId] ?? [];
+      actions.setVerificationRuns(e.workspaceId, [e.run, ...runs.filter((r) => r.id !== e.run.id)]);
       continue;
     }
     if (e.type === "scriptOutput") {
@@ -304,7 +311,10 @@ function handleEvents(events: CoreEvent[]) {
     }
     views[sessionId] = v;
   }
-  set({ views, scriptLog, changesTick, sessions, selectedSession });
+  // Verification-only batches must not invalidate chat/transcript subscriptions.
+  if (bySession.size || scriptLog !== s.scriptLog || changesTick !== s.changesTick || sessions !== s.sessions || selectedSession !== s.selectedSession) {
+    set({ ...(bySession.size || sessions !== s.sessions ? { views } : {}), scriptLog, changesTick, sessions, selectedSession });
+  }
   if (changesTick !== s.changesTick) {
     for (const id of Object.keys(changesTick)) if (changesTick[id] !== s.changesTick[id]) scheduleDiffStats(id);
   }
@@ -582,6 +592,24 @@ export const actions = {
     if (get().workspaces.find((w) => w.id === workspaceId)?.unread) void actions.markUnread(workspaceId, false);
     const sid = get().selectedSession[workspaceId];
     if (sid) actions.selectSession(workspaceId, sid);
+  },
+
+  setVerificationRuns(workspaceId: string, runs: CheckRun[]) {
+    if (JSON.stringify(get().verification[workspaceId]) === JSON.stringify(runs)) return;
+    set({ verification: { ...get().verification, [workspaceId]: runs } });
+  },
+
+  async reloadSessions(workspaceId: string, session?: Session) {
+    const list = await api.listSessions(workspaceId);
+    const views = { ...get().views };
+    for (const item of list) views[item.id] ??= newView(false);
+    if (session && !list.some((item) => item.id === session.id)) list.push(session);
+    if (session) views[session.id] ??= newView(false);
+    set({ sessions: { ...get().sessions, [workspaceId]: list }, views });
+    if (session) {
+      actions.selectSession(workspaceId, session.id);
+      await actions.loadHistory(session.id);
+    }
   },
 
   async createSession(workspaceId: string, agentId: string, model?: string | null, effort?: string | null, parentSessionId?: string | null) {

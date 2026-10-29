@@ -17,6 +17,7 @@ mod delegation;
 
 mod updater;
 mod profiles;
+mod verification;
 
 type Res<T> = Result<T, String>;
 
@@ -632,6 +633,15 @@ pub fn run() {
             supervision::repo_resources,
 
             subscribe,
+            verification::verification_presets,
+            verification::save_verification_presets,
+            verification::verification_status,
+            verification::run_check,
+            verification::cancel_check,
+            verification::start_review,
+            verification::verification_task,
+            verification::integration_preview,
+            verification::integrate_workspace,
             list_agents,
             list_repos,
             add_repo,
