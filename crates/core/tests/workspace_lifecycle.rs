@@ -21,6 +21,7 @@ async fn create_archive_restore() {
     std::fs::create_dir(&repo).unwrap();
     for args in [
         &["init", "-q", "-b", "main"][..],
+        &["config", "commit.gpgsign", "false"],
         &["config", "user.email", "t@t"],
         &["config", "user.name", "t"],
         &["commit", "-q", "--allow-empty", "-m", "init"],
@@ -74,6 +75,7 @@ async fn workspace_from_an_existing_branch() {
     std::fs::create_dir(&origin).unwrap();
     for args in [
         &["init", "-q", "-b", "main"][..],
+        &["config", "commit.gpgsign", "false"],
         &["config", "user.email", "t@t"],
         &["config", "user.name", "t"],
         &["commit", "-q", "--allow-empty", "-m", "init"],

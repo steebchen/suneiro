@@ -16,6 +16,7 @@ async fn fixture(hold: bool) -> (tempfile::TempDir, Arc<Core>, String) {
     std::fs::create_dir(&repo).unwrap();
     for args in [
         &["init", "-q", "-b", "main"][..],
+        &["config", "commit.gpgsign", "false"],
         &["config", "user.email", "test@example.com"],
         &["config", "user.name", "Test"],
         &["commit", "--allow-empty", "-qm", "init"],
@@ -159,6 +160,7 @@ async fn real_adapter_can_use_local_mcp_tools() {
     std::fs::create_dir(&repo).unwrap();
     for args in [
         &["init", "-q", "-b", "main"][..],
+        &["config", "commit.gpgsign", "false"],
         &["config", "user.email", "test@example.com"],
         &["config", "user.name", "Fixture"],
         &["commit", "--allow-empty", "-qm", "fixture"],

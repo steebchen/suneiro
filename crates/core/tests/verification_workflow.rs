@@ -11,6 +11,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<Core>, Workspace, Workspace) {
     std::fs::create_dir(&repo).unwrap();
     for args in [
         &["init", "-q", "-b", "main"][..],
+        &["config", "commit.gpgsign", "false"],
         &["config", "user.email", "test@example.com"],
         &["config", "user.name", "Test"],
     ] {
