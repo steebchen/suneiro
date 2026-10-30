@@ -8,7 +8,10 @@ use serde_json::Value;
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Event {
-    SessionUpdate { session_id: String, update: Value },
+    SessionUpdate {
+        session_id: String,
+        update: Value,
+    },
     UserMessage {
         session_id: String,
         text: String,
@@ -19,19 +22,61 @@ pub enum Event {
     },
     /// Snapshot of the worktree taken right before the last user message was
     /// sent, so the files can be put back to how they were.
-    Checkpoint { session_id: String, commit: String },
+    Checkpoint {
+        session_id: String,
+        commit: String,
+    },
     /// The files were restored to the checkpoint taken before a message.
-    CheckpointRestored { session_id: String, commit: String, undo: Option<String>, ts: i64 },
-    TurnEnd { session_id: String, stop_reason: String, ts: i64 },
-    SessionState { session_id: String, state: String, error: Option<String> },
-    SessionConfig { session_id: String, config_options: Value },
-    SessionTitle { session_id: String, title: String },
+
+    CheckpointRestored {
+        session_id: String,
+        commit: String,
+        undo: Option<String>,
+        ts: i64,
+    },
+    TurnEnd {
+        session_id: String,
+        stop_reason: String,
+        ts: i64,
+    },
+    SessionState {
+        session_id: String,
+        state: String,
+        error: Option<String>,
+    },
+    SessionConfig {
+        session_id: String,
+        config_options: Value,
+    },
+    SessionCapabilities {
+        session_id: String,
+        capabilities: crate::capabilities::SessionCapabilities,
+    },
+    SessionTitle {
+        session_id: String,
+        title: String,
+    },
+
     /// Suneiro-level permission mode: plan (agent asks) or auto-accept everything.
-    SessionMode { session_id: String, plan: bool },
+    SessionMode {
+        session_id: String,
+        plan: bool,
+    },
     /// A finished turn's usage (cost filled in or estimated when possible).
-    Usage { session_id: String, usage: crate::usage::PricedUsage },
-    PermissionRequest { session_id: String, request_id: String, tool_call: Value, options: Value },
-    PermissionResolved { session_id: String, request_id: String },
+    Usage {
+        session_id: String,
+        usage: crate::usage::PricedUsage,
+    },
+    PermissionRequest {
+        session_id: String,
+        request_id: String,
+        tool_call: Value,
+        options: Value,
+    },
+    PermissionResolved {
+        session_id: String,
+        request_id: String,
+    },
     /// The agent asks the user something (ACP form elicitation): `schema` is a
     /// JSON Schema object whose properties are the questions.
     Question {
@@ -43,14 +88,69 @@ pub enum Event {
         /// Codex answers on its own after this long.
         auto_resolve_ms: Option<u64>,
     },
-    QuestionResolved { session_id: String, request_id: String },
-    WorkspaceStatus { workspace_id: String, status: String },
-    WorkspaceTitle { workspace_id: String, title: String },
+    QuestionResolved {
+        session_id: String,
+        request_id: String,
+    },
+    WorkspaceStatus {
+        workspace_id: String,
+        status: String,
+    },
+    WorkspaceTitle {
+        workspace_id: String,
+        title: String,
+    },
     /// The workspace's branch was renamed (after its task).
-    WorkspaceBranch { workspace_id: String, branch: String },
+    WorkspaceBranch {
+        workspace_id: String,
+        branch: String,
+    },
     /// Latest PR for the workspace's branch (`null` if none).
-    WorkspacePr { workspace_id: String, pr: Value },
-    ScriptOutput { workspace_id: String, data: String },
+    WorkspacePr {
+        workspace_id: String,
+        pr: Value,
+    },
+    ScriptOutput {
+        workspace_id: String,
+        data: String,
+    },
+    DelegationChanged {
+        session_id: String,
+        task: crate::delegation::Task,
+    },
+    WorkspaceAdded {
+        workspace: crate::Workspace,
+    },
+    SessionAdded {
+        session: crate::store::Session,
+    },
+    SessionHierarchyChanged {
+        session_id: String,
+        parent_session_id: Option<String>,
+    },
+    SessionRemoved {
+        session_id: String,
+        workspace_id: String,
+    },
+
+
+
+
+    InboxUpdated {
+        item: crate::supervision::InboxItem,
+    },
+    InboxResolved {
+        id: String,
+    },
+    RepoControlsChanged {
+        repo_id: String,
+        controls: crate::supervision::RepoControls,
+    },
+
+    VerificationChanged {
+        workspace_id: String,
+        run: crate::verification::CheckRun,
+    },
 }
 
 impl Event {
@@ -59,10 +159,7 @@ impl Event {
         match self {
             Event::SessionUpdate { session_id, update } => {
                 let kind = update.get("sessionUpdate").and_then(|k| k.as_str()).unwrap_or("");
-                let transient = matches!(
-                    kind,
-                    "available_commands_update" | "session_info_update"
-                );
+                let transient = matches!(kind, "available_commands_update" | "session_info_update");
                 (!transient).then_some(session_id)
             }
             Event::UserMessage { session_id, .. }

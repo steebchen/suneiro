@@ -1,0 +1,9 @@
+{
+  "sessionId": "codex-fixture-1",
+  "configOptions": [
+    {"id":"mode","category":"mode","type":"select","currentValue":"agent","options":[{"value":"read-only"},{"value":"workspace-write"},{"value":"agent"},{"value":"agent-full-access"}]},
+    {"id":"collaboration_mode","category":"collaboration_mode","type":"select","currentValue":"default","options":[{"value":"default"},{"value":"plan"}]},
+    {"id":"model","category":"model","type":"select","currentValue":"gpt-test","options":[{"value":"gpt-test"},{"value":"gpt-small"}]},
+    {"id":"reasoning_effort","category":"thought_level","type":"select","currentValue":"medium","options":[{"value":"low"},{"value":"medium"},{"value":"high"}]}
+  ]
+}

@@ -68,6 +68,12 @@ async fn prompt_permission_config_and_resume() {
     .await;
     // Live config also feeds the model catalog.
     assert_eq!(core.catalogs()["fake"].models.len(), 2);
+    assert!(log.lock().iter().any(|event| matches!(
+        event,
+        Event::SessionCapabilities { session_id, capabilities }
+            if session_id == &sid && capabilities.steering && capabilities.resume
+                && !capabilities.images && !capabilities.load
+    )));
 
     // Default mode auto-accepts: the agent's permission request never reaches the UI.
     core.agents.prompt(&sid, "do the thing".into()).unwrap();
@@ -245,7 +251,7 @@ async fn checkpoints_restore_the_worktree_and_tell_the_agent() {
     let tmp = tempfile::tempdir().unwrap();
     let wt = tmp.path().join("wt");
     std::fs::create_dir(&wt).unwrap();
-    for args in [&["init", "-q", "-b", "main"][..], &["config", "user.email", "t@t"], &["config", "user.name", "t"]] {
+    for args in [&["init", "-q", "-b", "main"][..], &["config", "commit.gpgsign", "false"], &["config", "user.email", "t@t"], &["config", "user.name", "t"]] {
         suneiro_core::git::git(&wt, args).await.unwrap();
     }
     std::fs::write(wt.join("a.txt"), "a\n").unwrap();
@@ -312,7 +318,7 @@ async fn unpushed_branch_is_named_after_the_task() {
     let tmp = tempfile::tempdir().unwrap();
     let wt = tmp.path().join("wt");
     std::fs::create_dir(&wt).unwrap();
-    for args in [&["init", "-q", "-b", "runner/tokyo"][..], &["config", "user.email", "t@t"], &["config", "user.name", "t"], &["commit", "-q", "--allow-empty", "-m", "init"]] {
+    for args in [&["init", "-q", "-b", "runner/tokyo"][..], &["config", "commit.gpgsign", "false"], &["config", "user.email", "t@t"], &["config", "user.name", "t"], &["commit", "-q", "--allow-empty", "-m", "init"]] {
         suneiro_core::git::git(&wt, args).await.unwrap();
     }
     let (log, sink) = event_log();

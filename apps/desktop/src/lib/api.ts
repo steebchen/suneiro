@@ -1,5 +1,4 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
-
 export type Repo = { id: string; name: string; path: string; defaultBranch: string };
 
 export type Workspace = {
@@ -26,10 +25,17 @@ export type Session = {
   createdAt: number;
   model: string | null;
   effort: string | null;
+  parentSessionId: string | null;
 };
 
 export type AgentDef = { id: string; name: string; command: string; args: string[] };
-
+export type VerificationRevision = { head: string; fingerprint: string };
+export type CheckRun = {
+  id: string; workspaceId: string; presetId: string; command: string; cwd: string;
+  revision: VerificationRevision;
+  status: "running" | "passed" | "failed" | "cancelled";
+  log: string; exitCode: number | null; stale: boolean;
+};
 export type RepoConfig = { scripts: { setup?: string | null; run?: string | null; archive?: string | null }; copy: string[] };
 
 export type Choice = { value: string; name: string; description?: string | null };
@@ -64,6 +70,7 @@ export type Settings = {
   editor: string;
   theme: "system" | "light" | "dark";
   renameBranches: boolean;
+  maxTabDepth: number;
 };
 
 export type AgentStatus = {
@@ -121,6 +128,8 @@ export type PermissionOption = { optionId: string; name: string; kind: string };
 export type AcpUpdate = { sessionUpdate: string; [key: string]: any };
 
 export type CoreEvent =
+  | { type: "workspaceAdded"; workspace: Workspace }
+  | { type: "delegationChanged"; sessionId: string; task: DelegatedTask }
   | { type: "sessionUpdate"; sessionId: string; update: AcpUpdate }
   | { type: "userMessage"; sessionId: string; text: string; ts: number; images?: string[] }
   | { type: "checkpoint"; sessionId: string; commit: string }
@@ -128,7 +137,11 @@ export type CoreEvent =
   | { type: "turnEnd"; sessionId: string; stopReason: string; ts: number }
   | { type: "sessionState"; sessionId: string; state: string; error: string | null }
   | { type: "sessionConfig"; sessionId: string; configOptions: ConfigOption[] }
+  | { type: "sessionCapabilities"; sessionId: string; capabilities: SessionCapabilities }
   | { type: "sessionTitle"; sessionId: string; title: string }
+  | { type: "sessionAdded"; session: Session }
+  | { type: "sessionHierarchyChanged"; sessionId: string; parentSessionId: string | null }
+  | { type: "sessionRemoved"; sessionId: string; workspaceId: string }
   | { type: "sessionMode"; sessionId: string; plan: boolean }
   | { type: "usage"; sessionId: string; usage: Usage }
   | { type: "permissionRequest"; sessionId: string; requestId: string; toolCall: any; options: PermissionOption[] }
@@ -143,11 +156,15 @@ export type CoreEvent =
       autoResolveMs: number | null;
     }
   | { type: "questionResolved"; sessionId: string; requestId: string }
+  | { type: "verificationChanged"; workspaceId: string; run: CheckRun }
   | { type: "workspaceStatus"; workspaceId: string; status: string }
   | { type: "workspaceTitle"; workspaceId: string; title: string }
   | { type: "workspaceBranch"; workspaceId: string; branch: string }
   | { type: "workspacePr"; workspaceId: string; pr: PrStatus | null }
-  | { type: "scriptOutput"; workspaceId: string; data: string };
+  | { type: "scriptOutput"; workspaceId: string; data: string }
+  | { type: "inboxUpdated"; item: InboxItem }
+  | { type: "inboxResolved"; id: string }
+  | { type: "repoControlsChanged"; repoId: string; controls: RepoControls };
 
 export type PrStatus = {
   number: number;
@@ -160,13 +177,29 @@ export type PrStatus = {
   headRefName?: string;
   statusCheckRollup: { name?: string; context?: string; status?: string; conclusion?: string; state?: string }[];
 };
+export type InboxItem = { id: string; sessionId: string; workspaceId: string; repoId: string; kind: string; message: string; createdAt: number; resolved: boolean };
+export type RepoControls = { maxConcurrent: number; paused: boolean; warningUsd: number | null; stopUsd: number | null; spendSince: number };
+export type ResourceUsage = { sessions: number; running: number; turns: number; inputTokens: number; cachedTokens: number; outputTokens: number; reportedUsd: number; estimatedUsd: number; unknownTurns: number };
 
 export const api = {
+  inbox: () => invoke<InboxItem[]>("supervision_inbox"),
+  dismissInbox: (id: string) => invoke<void>("dismiss_inbox", { id }),
+  claimNotification: (id: string) => invoke<boolean>("claim_notification", { id }),
+  repoControls: (repoId: string) => invoke<RepoControls>("repo_controls", { repoId }),
+  saveRepoControls: (repoId: string, controls: RepoControls) => invoke<void>("save_repo_controls", { repoId, controls }),
+  repoResources: (repoId: string) => invoke<ResourceUsage>("repo_resources", { repoId }),
+  subtreeResources: (sessionId: string) => invoke<ResourceUsage>("subtree_resources", { sessionId }),
   subscribe: (onEvents: (events: CoreEvent[]) => void) => {
     const channel = new Channel<CoreEvent[]>();
     channel.onmessage = onEvents;
     return invoke<void>("subscribe", { channel });
   },
+  delegateTask: (sessionId: string, request: DelegationRequest) => invoke<DelegatedTask>("delegate_task", { sessionId, request }),
+  delegationTasks: (sessionId: string) => invoke<DelegatedTask[]>("delegation_tasks", { sessionId }),
+  delegationMessages: (sessionId: string) => invoke<DelegationMessage[]>("delegation_messages", { sessionId }),
+  delegationSend: (sessionId: string, taskId: string, message: string) => invoke<void>("delegation_send", { sessionId, taskId, message }),
+  delegationCancel: (sessionId: string, taskId: string) => invoke<DelegatedTask>("delegation_cancel", { sessionId, taskId }),
+  delegationFinish: (sessionId: string, taskId: string, report: string) => invoke<DelegatedTask>("delegation_finish", { sessionId, taskId, report }),
   listAgents: () => invoke<AgentDef[]>("list_agents"),
   listRepos: () => invoke<Repo[]>("list_repos"),
   addRepo: (path: string) => invoke<Repo>("add_repo", { path }),
@@ -196,6 +229,11 @@ export const api = {
   modelCatalogs: () => invoke<Record<string, Catalog>>("model_catalogs"),
   refreshCatalog: (agentId: string) => invoke<Catalog>("refresh_catalog", { agentId }),
   connectSession: (sessionId: string) => invoke<void>("connect_session", { sessionId }),
+  createChildSession: (parentSessionId: string, workspaceId: string, agentId: string, model?: string | null, effort?: string | null) =>
+    invoke<Session>("create_child_session", { parentSessionId, workspaceId, agentId, model: model ?? null, effort: effort ?? null }),
+  createSiblingSession: (siblingSessionId: string, workspaceId: string, agentId: string, model?: string | null, effort?: string | null) =>
+    invoke<Session>("create_sibling_session", { siblingSessionId, workspaceId, agentId, model: model ?? null, effort: effort ?? null }),
+  detachSession: (sessionId: string) => invoke<Session>("detach_session", { sessionId }),
   deleteSession: (sessionId: string) => invoke<void>("delete_session", { sessionId }),
   sessionEvents: (sessionId: string) => invoke<CoreEvent[]>("session_events", { sessionId }),
   sendPrompt: (sessionId: string, text: string, images: string[] = []) => invoke<void>("send_prompt", { sessionId, text, images }),
@@ -270,3 +308,7 @@ export const api = {
   },
   openPath: (path: string, appName?: string) => invoke<void>("open_path", { path, appName: appName ?? null }),
 };
+export type SessionCapabilities = { steering: boolean; images: boolean; resume: boolean; load: boolean };
+export type DelegationRequest = { requestKey: string; base: "caller_head" | "repo_default"; relation: "child" | "sibling"; isolation: "isolated" | "same_workspace"; agentId: string; model: string | null; effort: string | null; brief: string; acceptanceCriteria: string; selectedContext: string };
+export type DelegatedTask = { id: string; callerSessionId: string; sessionId: string | null; workspaceId: string | null; state: string; request: DelegationRequest; report: string | null };
+export type DelegationMessage = { id: number; taskId: string; senderSessionId: string; text: string };

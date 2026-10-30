@@ -1,6 +1,9 @@
 import { create } from "zustand";
-import { api, type ChangedFile, type AgentDef, type AgentStatus, type Catalog, type LoadoutEntry, type ModelPrice, type PrStatus, type Settings, type Usage, type UpdateStatus, type ConfigOption, type CoreEvent, type PermissionOption, type Repo, type Session, type Workspace } from "./api";
+import { api, type ChangedFile, type AgentDef, type AgentStatus, type Catalog, type LoadoutEntry, type ModelPrice, type PrStatus, type Settings, type Usage, type UpdateStatus, type ConfigOption, type CoreEvent, type PermissionOption, type Repo, type Session, type Workspace, type SessionCapabilities } from "./api";
 import { applyEvents, emptyTranscript, type Transcript } from "./transcript";
+import { handleSupervisionEvents, loadInbox } from "./supervision";
+import { notifyOnce } from "./notifications";
+
 
 export type Permission = { requestId: string; toolCall: any; options: PermissionOption[] };
 export type PendingQuestion = {
@@ -24,6 +27,7 @@ export type SessionView = {
   state: "disconnected" | "connecting" | "idle" | "running" | "error";
   error: string | null;
   config: ConfigOption[];
+  capabilities: SessionCapabilities | null;
   permissions: Permission[];
   questions: PendingQuestion[];
   /** history loaded from disk (or session created in this run) */
@@ -45,6 +49,7 @@ const newView = (loaded: boolean): SessionView => ({
   state: "disconnected",
   error: null,
   config: [],
+  capabilities: null,
   permissions: [],
   questions: [],
   loaded,
@@ -57,6 +62,7 @@ const newView = (loaded: boolean): SessionView => ({
 
 type State = {
   ready: boolean;
+  delegationRevision: Record<string, number>;
   agents: AgentDef[];
   repos: Repo[];
   workspaces: Workspace[];
@@ -96,6 +102,7 @@ type State = {
 
 export const useStore = create<State>(() => ({
   ready: false,
+  delegationRevision: {},
   agents: [],
   repos: [],
   workspaces: [],
@@ -142,15 +149,58 @@ async function guard<T>(p: Promise<T>): Promise<T | undefined> {
 }
 
 function handleEvents(events: CoreEvent[]) {
+  handleSupervisionEvents(events);
   const s = get();
   const attention: Attention[] = [];
   const views = { ...s.views };
   let scriptLog = s.scriptLog;
   let changesTick = s.changesTick;
   let sessions = s.sessions;
+  let selectedSession = s.selectedSession;
   const bySession = new Map<string, CoreEvent[]>();
 
   for (const e of events) {
+    if (e.type === "sessionAdded") {
+      sessions = upsertSession(sessions, e.session);
+      views[e.session.id] ??= newView(true);
+      continue;
+    }
+    if (e.type === "sessionHierarchyChanged") {
+      for (const [ws, list] of Object.entries(sessions)) {
+        if (!list.some((x) => x.id === e.sessionId && x.parentSessionId !== e.parentSessionId)) continue;
+        sessions = { ...sessions, [ws]: list.map((x) => x.id === e.sessionId ? { ...x, parentSessionId: e.parentSessionId } : x) };
+      }
+      continue;
+    }
+    if (e.type === "sessionRemoved") {
+      const list = (sessions[e.workspaceId] ?? []).filter((x) => x.id !== e.sessionId);
+      sessions = { ...sessions, [e.workspaceId]: list };
+      if (selectedSession[e.workspaceId] === e.sessionId) {
+        selectedSession = { ...selectedSession };
+        if (list.length) selectedSession[e.workspaceId] = list[list.length - 1].id;
+        else delete selectedSession[e.workspaceId];
+      }
+      delete views[e.sessionId];
+      continue;
+    }
+
+    if (e.type === "inboxUpdated") {
+      if (!isVisible(e.item.sessionId)) void notifyOnce(e.item.id, "Suneiro — " + e.item.kind, e.item.message);
+      continue;
+    }
+    if (e.type === "inboxResolved" || e.type === "repoControlsChanged") continue;
+
+    if (e.type === "workspaceAdded") {
+      set({ workspaces: [e.workspace, ...get().workspaces.filter((w) => w.id !== e.workspace.id)] });
+      continue;
+    }
+    if (e.type === "delegationChanged") {
+      set({ delegationRevision: { ...get().delegationRevision, [e.sessionId]: (get().delegationRevision[e.sessionId] ?? 0) + 1 } });
+      continue;
+    }
+    if (e.type === "verificationChanged") {
+      continue;
+    }
     if (e.type === "scriptOutput") {
       if (scriptLog === s.scriptLog) scriptLog = { ...scriptLog };
       scriptLog[e.workspaceId] = (scriptLog[e.workspaceId] ?? "") + e.data;
@@ -193,6 +243,9 @@ function handleEvents(events: CoreEvent[]) {
           v.state = e.state as SessionView["state"];
           v.error = e.error;
           break;
+        case "sessionCapabilities":
+          v.capabilities = e.capabilities;
+          break;
         case "sessionConfig":
           v.config = e.configOptions;
           break;
@@ -234,7 +287,7 @@ function handleEvents(events: CoreEvent[]) {
     const asks = list.find((e) => e.type === "question" || e.type === "permissionRequest");
     if ((finished || asks) && !isVisible(sessionId)) {
       if (finished) v.unread = true;
-      attention.push({ sessionId, kind: asks ? "input" : "done", detail: asks?.type === "question" ? asks.message : undefined });
+      attention.push({ sessionId, kind: asks ? "input" : "done", notificationId: finished?.type === "turnEnd" ? `turn:${sessionId}:${finished.ts}` : "" });
     }
     // Send the next queued follow-up once a turn ends normally.
     if (finished && finished.type === "turnEnd" && finished.stopReason === "end_turn" && v.queued.length && !v.queueHeld) {
@@ -244,7 +297,10 @@ function handleEvents(events: CoreEvent[]) {
     }
     views[sessionId] = v;
   }
-  set({ views, scriptLog, changesTick, sessions });
+  // Verification-only batches must not invalidate chat/transcript subscriptions.
+  if (bySession.size || scriptLog !== s.scriptLog || changesTick !== s.changesTick || sessions !== s.sessions || selectedSession !== s.selectedSession) {
+    set({ ...(bySession.size || sessions !== s.sessions ? { views } : {}), scriptLog, changesTick, sessions, selectedSession });
+  }
   if (changesTick !== s.changesTick) {
     for (const id of Object.keys(changesTick)) if (changesTick[id] !== s.changesTick[id]) scheduleDiffStats(id);
   }
@@ -265,7 +321,7 @@ function scheduleDiffStats(workspaceId: string, delay = 1500) {
   );
 }
 
-type Attention = { sessionId: string; kind: "done" | "input"; detail?: string };
+type Attention = { sessionId: string; kind: "done" | "input"; notificationId: string };
 
 /** Bold the workspace in the sidebar and post a macOS notification. */
 function notifyAttention(a: Attention) {
@@ -275,21 +331,7 @@ function notifyAttention(a: Attention) {
   if (!ws.unread) void actions.markUnread(ws.id, true);
   if (document.hasFocus() && s.selectedWorkspace === ws.id) return;
   const title = ws.title || (s.sessions[ws.id] ?? []).find((x) => x.title)?.title || ws.name;
-  void notify(title, a.kind === "input" ? (a.detail ? `Question: ${a.detail}` : "Needs your input") : "Finished");
-}
-
-let notifyPermission: boolean | null = null;
-async function notify(title: string, body: string) {
-  if (!("__TAURI_INTERNALS__" in window)) return;
-  try {
-    const n = await import("@tauri-apps/plugin-notification");
-    if (notifyPermission === null) {
-      notifyPermission = (await n.isPermissionGranted()) || (await n.requestPermission()) === "granted";
-    }
-    if (notifyPermission) n.sendNotification({ title, body });
-  } catch {
-    // Notifications are best-effort.
-  }
+  if (a.kind === "done") void notifyOnce(a.notificationId, title, "Finished");
 }
 
 function isVisible(sessionId: string) {
@@ -322,6 +364,7 @@ export const actions = {
     void actions.detectAgents().then(() => actions.ensureCatalogs());
     void actions.loadRecents();
     void actions.loadUsage();
+    void loadInbox().catch((e) => toast(String(e)));
     void api.updateStatus().then((update) => set({ update })).catch(() => {});
     const lists = await Promise.all(workspaces.map((w) => api.listSessions(w.id)));
     const sessions: Record<string, Session[]> = {};
@@ -537,29 +580,50 @@ export const actions = {
     if (sid) actions.selectSession(workspaceId, sid);
   },
 
-  async createSession(workspaceId: string, agentId: string, model?: string | null, effort?: string | null) {
-    const session = await guard(api.createSession(workspaceId, agentId, model, effort));
+
+
+  async createSession(workspaceId: string, agentId: string, model?: string | null, effort?: string | null, parentSessionId?: string | null) {
+    const session = await guard(parentSessionId
+      ? api.createChildSession(parentSessionId, workspaceId, agentId, model, effort)
+      : api.createSession(workspaceId, agentId, model, effort));
     if (!session) return;
     const s = get();
     set({
-      sessions: { ...s.sessions, [workspaceId]: [...(s.sessions[workspaceId] ?? []), session] },
+      sessions: upsertSession(s.sessions, session),
       views: { ...s.views, [session.id]: { ...newView(true), ...s.views[session.id], state: "connecting" } },
       selectedSession: { ...s.selectedSession, [workspaceId]: session.id },
     });
+    return session;
   },
+
 
   async closeSession(workspaceId: string, sessionId: string) {
     // A workspace always keeps at least one chat, so the view never goes blank.
     if ((get().sessions[workspaceId] ?? []).length <= 1) return;
-    await guard(api.deleteSession(sessionId));
+    const ok = await guard(api.deleteSession(sessionId).then(() => true));
+    if (!ok) return;
+    const detached: CoreEvent[] = Object.values(get().sessions).flat().filter((x) => x.parentSessionId === sessionId).map((x) => ({ type: "sessionHierarchyChanged", sessionId: x.id, parentSessionId: null }));
+    handleEvents([...detached, { type: "sessionRemoved", sessionId, workspaceId }]);
+  },
+
+  async newRelatedChat(sessionId: string, kind: "child" | "sibling", workspaceId?: string) {
     const s = get();
-    const list = (s.sessions[workspaceId] ?? []).filter((x) => x.id !== sessionId);
-    const selectedSession = { ...s.selectedSession };
-    if (selectedSession[workspaceId] === sessionId) {
-      if (list.length) selectedSession[workspaceId] = list[list.length - 1].id;
-      else delete selectedSession[workspaceId];
-    }
-    set({ sessions: { ...s.sessions, [workspaceId]: list }, selectedSession });
+    const relative = Object.values(s.sessions).flat().find((x) => x.id === sessionId);
+    if (!relative) return;
+    const target = workspaceId ?? relative.workspaceId;
+    const first = s.settings?.loadout[0];
+    const create = kind === "child" ? api.createChildSession : api.createSiblingSession;
+    const session = await guard(create(sessionId, target, first?.agent ?? s.settings?.defaultAgent ?? "claude", first?.model, first?.effort));
+    if (!session) return;
+    handleEvents([{ type: "sessionAdded", session }]);
+    actions.selectWorkspace(target);
+    actions.selectSession(target, session.id);
+    return session;
+  },
+
+  async detachSession(sessionId: string) {
+    const session = await guard(api.detachSession(sessionId));
+    if (session) handleEvents([{ type: "sessionHierarchyChanged", sessionId, parentSessionId: session.parentSessionId }]);
   },
 
   selectSession(workspaceId: string, sessionId: string) {
@@ -644,7 +708,14 @@ export const actions = {
   },
 
   async send(sessionId: string, text: string, images: string[] = []) {
-    await guard(api.sendPrompt(sessionId, text, images));
+    try {
+      await api.sendPrompt(sessionId, text, images);
+    } catch (e) {
+      const draft = get().drafts[sessionId] ?? "";
+      actions.setDraft(sessionId, draft ? `${text}\n\n${draft}` : text);
+      actions.setAttachments(sessionId, [...new Set([...images, ...(get().attachments[sessionId] ?? [])])]);
+      toast(String(e));
+    }
   },
 
   /** Attach image files (copied into the app's data folder). */
@@ -777,4 +848,9 @@ export function formatTokens(n: number) {
   if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
   if (n >= 1e3) return `${(n / 1e3).toFixed(n >= 1e5 ? 0 : 1)}k`;
   return String(n);
+}
+function upsertSession(sessions: Record<string, Session[]>, session: Session): Record<string, Session[]> {
+  const list = sessions[session.workspaceId] ?? [];
+  if (list.some((x) => x.id === session.id)) return sessions;
+  return { ...sessions, [session.workspaceId]: [...list, session] };
 }

@@ -47,6 +47,13 @@ export function Settings() {
           >
             <PricingTable />
           </Section>
+          <Section title="Related chats">
+            <Field label="Related chat levels" hint="Choose how many levels of related chats you can add. Lowering this keeps existing chats. Closing a chat keeps its related chats.">
+              <select aria-label="Related chat levels" value={settings.maxTabDepth} onChange={(e) => void actions.saveSettings({ maxTabDepth: Number(e.target.value) })} className="rounded-md border border-border bg-bg px-2 py-1.5 text-xs">
+                {Array.from({ length: 8 }, (_, i) => i + 1).map((depth) => <option key={depth} value={depth}>{depth}</option>)}
+              </select>
+            </Field>
+          </Section>
           <Section title="Workspaces">
             <Field label="Workspaces folder" hint="New git worktrees are created here, grouped by repository.">
               <div className="flex gap-2">

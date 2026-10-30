@@ -46,6 +46,7 @@ pub struct Session {
     /// Last known model/effort, so the UI can show them before the agent runs.
     pub model: Option<String>,
     pub effort: Option<String>,
+    pub parent_session_id: Option<String>,
 }
 
 /// One agent turn's token usage and (if the agent reports it) cost.
@@ -68,10 +69,7 @@ pub struct UsageRecord {
 }
 
 pub fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
 const SCHEMA: &str = r#"
@@ -135,10 +133,7 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 "#;
 
-pub struct Store {
-    conn: Mutex<Connection>,
-    writer: mpsc::Sender<(String, Value)>,
-}
+pub struct Store { pub(crate) conn: Mutex<Connection>, writer: mpsc::Sender<(String, Value)>, }
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
@@ -147,6 +142,7 @@ impl Store {
         }
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(crate::supervision::SCHEMA)?;
         migrate(&conn)?;
         let writer = spawn_event_writer(Connection::open(path)?);
         Ok(Self { conn: Mutex::new(conn), writer })
@@ -162,29 +158,16 @@ impl Store {
     }
 
     pub fn repo_by_path(&self, path: &str) -> Result<Option<Repo>> {
-        Ok(self
-            .conn
-            .lock()
-            .query_row(
-                "SELECT id, name, path, default_branch FROM repos WHERE path = ?1",
-                [path],
-                row_to_repo,
-            )
-            .optional()?)
+        Ok(self.conn.lock().query_row("SELECT id, name, path, default_branch FROM repos WHERE path = ?1", [path], row_to_repo).optional()?)
     }
 
     pub fn repo(&self, id: &str) -> Result<Repo> {
-        Ok(self.conn.lock().query_row(
-            "SELECT id, name, path, default_branch FROM repos WHERE id = ?1",
-            [id],
-            row_to_repo,
-        )?)
+        Ok(self.conn.lock().query_row("SELECT id, name, path, default_branch FROM repos WHERE id = ?1", [id], row_to_repo)?)
     }
 
     pub fn repos(&self) -> Result<Vec<Repo>> {
         let conn = self.conn.lock();
-        let mut stmt =
-            conn.prepare("SELECT id, name, path, default_branch FROM repos ORDER BY position, name")?;
+        let mut stmt = conn.prepare("SELECT id, name, path, default_branch FROM repos ORDER BY position, name")?;
         let rows = stmt.query_map([], row_to_repo)?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
@@ -206,10 +189,7 @@ impl Store {
             "DELETE FROM events WHERE session_id IN (SELECT s.id FROM sessions s JOIN workspaces w ON s.workspace_id = w.id WHERE w.repo_id = ?1)",
             [id],
         )?;
-        conn.execute(
-            "DELETE FROM sessions WHERE workspace_id IN (SELECT id FROM workspaces WHERE repo_id = ?1)",
-            [id],
-        )?;
+        conn.execute("DELETE FROM sessions WHERE workspace_id IN (SELECT id FROM workspaces WHERE repo_id = ?1)", [id])?;
         conn.execute("DELETE FROM workspaces WHERE repo_id = ?1", [id])?;
         conn.execute("DELETE FROM repos WHERE id = ?1", [id])?;
         Ok(())
@@ -253,18 +233,13 @@ impl Store {
     }
 
     pub fn setting(&self, key: &str) -> Result<Option<String>> {
-        Ok(self
-            .conn
-            .lock()
-            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0))
-            .optional()?)
+        Ok(self.conn.lock().query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0)).optional()?)
     }
 
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
-        self.conn.lock().execute(
-            "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            params![key, value],
-        )?;
+        self.conn
+            .lock()
+            .execute("INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value", params![key, value])?;
         Ok(())
     }
 
@@ -277,23 +252,17 @@ impl Store {
     }
 
     pub fn set_workspace_status(&self, id: &str, status: &str) -> Result<()> {
-        self.conn
-            .lock()
-            .execute("UPDATE workspaces SET status = ?2 WHERE id = ?1", params![id, status])?;
+        self.conn.lock().execute("UPDATE workspaces SET status = ?2 WHERE id = ?1", params![id, status])?;
         Ok(())
     }
 
     pub fn set_workspace_branch(&self, id: &str, branch: &str) -> Result<()> {
-        self.conn
-            .lock()
-            .execute("UPDATE workspaces SET branch = ?2 WHERE id = ?1", params![id, branch])?;
+        self.conn.lock().execute("UPDATE workspaces SET branch = ?2 WHERE id = ?1", params![id, branch])?;
         Ok(())
     }
 
     pub fn set_workspace_title(&self, id: &str, title: &str) -> Result<()> {
-        self.conn
-            .lock()
-            .execute("UPDATE workspaces SET title = ?2 WHERE id = ?1", params![id, title])?;
+        self.conn.lock().execute("UPDATE workspaces SET title = ?2 WHERE id = ?1", params![id, title])?;
         Ok(())
     }
 
@@ -325,16 +294,12 @@ impl Store {
     }
 
     pub fn set_workspace_unread(&self, id: &str, unread: bool) -> Result<()> {
-        self.conn
-            .lock()
-            .execute("UPDATE workspaces SET unread = ?2 WHERE id = ?1", params![id, unread])?;
+        self.conn.lock().execute("UPDATE workspaces SET unread = ?2 WHERE id = ?1", params![id, unread])?;
         Ok(())
     }
 
     pub fn set_archived_at(&self, id: &str, at: Option<i64>) -> Result<()> {
-        self.conn
-            .lock()
-            .execute("UPDATE workspaces SET archived_at = ?2 WHERE id = ?1", params![id, at])?;
+        self.conn.lock().execute("UPDATE workspaces SET archived_at = ?2 WHERE id = ?1", params![id, at])?;
         Ok(())
     }
 
@@ -346,16 +311,30 @@ impl Store {
     }
 
     pub fn add_session(&self, s: &Session) -> Result<()> {
-        self.conn.lock().execute(
-            "INSERT INTO sessions (id, workspace_id, agent_id, acp_session_id, title, created_at, model, effort) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![s.id, s.workspace_id, s.agent_id, s.acp_session_id, s.title, s.created_at, s.model, s.effort],
+        self.add_session_with_depth(s, 8)
+    }
+
+    pub fn add_session_with_depth(&self, s: &Session, max_depth: u8) -> Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        validate_parent(&tx, &s.id, &s.workspace_id, s.parent_session_id.as_deref(), max_depth)?;
+        tx.execute(
+            "INSERT INTO sessions (id, workspace_id, agent_id, acp_session_id, title, created_at, model, effort, parent_session_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![s.id, s.workspace_id, s.agent_id, s.acp_session_id, s.title, s.created_at, s.model, s.effort, s.parent_session_id],
         )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn detach_session(&self, id: &str) -> Result<()> {
+        let changed = self.conn.lock().execute("UPDATE sessions SET parent_session_id = NULL WHERE id = ?1", [id])?;
+        anyhow::ensure!(changed == 1, "chat does not exist");
         Ok(())
     }
 
     pub fn session(&self, id: &str) -> Result<Session> {
         Ok(self.conn.lock().query_row(
-            "SELECT id, workspace_id, agent_id, acp_session_id, title, created_at, model, effort FROM sessions WHERE id = ?1",
+            "SELECT id, workspace_id, agent_id, acp_session_id, title, created_at, model, effort, parent_session_id FROM sessions WHERE id = ?1",
             [id],
             row_to_session,
         )?)
@@ -364,40 +343,54 @@ impl Store {
     pub fn sessions(&self, workspace_id: &str) -> Result<Vec<Session>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, workspace_id, agent_id, acp_session_id, title, created_at, model, effort FROM sessions WHERE workspace_id = ?1 ORDER BY created_at",
+            "SELECT id, workspace_id, agent_id, acp_session_id, title, created_at, model, effort, parent_session_id FROM sessions WHERE workspace_id = ?1 ORDER BY created_at, id",
         )?;
         let rows = stmt.query_map([workspace_id], row_to_session)?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
     pub fn set_acp_session_id(&self, id: &str, acp_id: &str) -> Result<()> {
-        self.conn.lock().execute(
-            "UPDATE sessions SET acp_session_id = ?2 WHERE id = ?1",
-            params![id, acp_id],
-        )?;
+        self.conn.lock().execute("UPDATE sessions SET acp_session_id = ?2 WHERE id = ?1", params![id, acp_id])?;
         Ok(())
     }
 
     pub fn set_session_model(&self, id: &str, model: Option<&str>, effort: Option<&str>) -> Result<()> {
-        self.conn.lock().execute(
-            "UPDATE sessions SET model = COALESCE(?2, model), effort = COALESCE(?3, effort) WHERE id = ?1",
-            params![id, model, effort],
-        )?;
+        self.conn.lock().execute("UPDATE sessions SET model = COALESCE(?2, model), effort = COALESCE(?3, effort) WHERE id = ?1", params![id, model, effort])?;
         Ok(())
     }
 
     pub fn set_session_title(&self, id: &str, title: &str) -> Result<()> {
-        self.conn
-            .lock()
-            .execute("UPDATE sessions SET title = ?2 WHERE id = ?1", params![id, title])?;
+        self.conn.lock().execute("UPDATE sessions SET title = ?2 WHERE id = ?1", params![id, title])?;
         Ok(())
     }
 
-    pub fn delete_session(&self, id: &str) -> Result<()> {
+    pub fn delete_session(&self, id: &str) -> Result<Vec<String>> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        let count: i64 =
+            tx.query_row("SELECT COUNT(*) FROM sessions WHERE workspace_id = (SELECT workspace_id FROM sessions WHERE id = ?1)", [id], |r| r.get(0))?;
+        anyhow::ensure!(count > 1, "a workspace must keep at least one chat");
+        let children = {
+            let mut stmt = tx.prepare("SELECT id FROM sessions WHERE parent_session_id = ?1")?;
+            {
+                let rows = stmt.query_map([id], |r| r.get::<_, String>(0))?;
+                rows.collect::<Result<Vec<_>, _>>()?
+            }
+        };
+        tx.execute("UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?1", [id])?;
+        tx.execute("DELETE FROM events WHERE session_id = ?1", [id])?;
+        tx.execute("DELETE FROM sessions WHERE id = ?1", [id])?;
+        tx.commit()?;
+        Ok(children)
+    }
+
+    pub fn subtree_session_ids(&self, root: &str) -> Result<Vec<String>> {
         let conn = self.conn.lock();
-        conn.execute("DELETE FROM events WHERE session_id = ?1", [id])?;
-        conn.execute("DELETE FROM sessions WHERE id = ?1", [id])?;
-        Ok(())
+        let mut stmt = conn.prepare("WITH RECURSIVE tree(id) AS (SELECT id FROM sessions WHERE id = ?1 UNION SELECT s.id FROM sessions s JOIN tree t ON s.parent_session_id = t.id) SELECT id FROM tree")?;
+        {
+            let rows = stmt.query_map([root], |r| r.get::<_, String>(0))?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        }
     }
 
     /// Queue an event for persistence. Writes are batched on a background thread.
@@ -407,8 +400,7 @@ impl Store {
 
     pub fn events(&self, session_id: &str) -> Result<Vec<Value>> {
         let conn = self.conn.lock();
-        let mut stmt =
-            conn.prepare("SELECT data FROM events WHERE session_id = ?1 ORDER BY seq")?;
+        let mut stmt = conn.prepare("SELECT data FROM events WHERE session_id = ?1 ORDER BY seq")?;
         let rows = stmt.query_map([session_id], |r| r.get::<_, String>(0))?;
         let mut out = Vec::new();
         for row in rows {
@@ -423,9 +415,7 @@ impl Store {
 /// Additive migrations for databases created by older versions.
 fn migrate(conn: &Connection) -> Result<()> {
     let add_column = |table: &str, column: &str, ddl: &str| -> Result<()> {
-        let exists = conn
-            .prepare(&format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1"))?
-            .exists([column])?;
+        let exists = conn.prepare(&format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1"))?.exists([column])?;
         if !exists {
             conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {ddl}"), [])?;
         }
@@ -436,6 +426,8 @@ fn migrate(conn: &Connection) -> Result<()> {
     add_column("workspaces", "unread", "INTEGER NOT NULL DEFAULT 0")?;
     add_column("sessions", "model", "TEXT")?;
     add_column("sessions", "effort", "TEXT")?;
+    add_column("sessions", "parent_session_id", "TEXT REFERENCES sessions(id) ON DELETE SET NULL")?;
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS sessions_parent ON sessions(parent_session_id);")?;
     // 0 for repos added before ordering existed, which keeps them sorted by name.
     add_column("repos", "position", "INTEGER NOT NULL DEFAULT 0")?;
     Ok(())
@@ -455,9 +447,7 @@ fn spawn_event_writer(mut conn: Connection) -> mpsc::Sender<(String, Value)> {
                 let batch = coalesce_chunks(batch);
                 let Ok(tx) = conn.transaction() else { continue };
                 {
-                    let Ok(mut stmt) =
-                        tx.prepare_cached("INSERT INTO events (session_id, data) VALUES (?1, ?2)")
-                    else {
+                    let Ok(mut stmt) = tx.prepare_cached("INSERT INTO events (session_id, data) VALUES (?1, ?2)") else {
                         continue;
                     };
                     for (sid, v) in &batch {
@@ -520,6 +510,32 @@ fn row_to_workspace(r: &rusqlite::Row) -> rusqlite::Result<Workspace> {
     })
 }
 
+fn validate_parent(conn: &Connection, id: &str, workspace_id: &str, parent: Option<&str>, max_depth: u8) -> Result<()> {
+    anyhow::ensure!((1..=8).contains(&max_depth), "maximum tab depth must be between 1 and 8");
+    let (repo, status): (String, String) =
+        conn.query_row("SELECT repo_id, status FROM workspaces WHERE id = ?1", [workspace_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    anyhow::ensure!(status != "archived", "cannot create a chat in an archived workspace");
+    let mut next = parent.map(str::to_owned);
+    let mut seen = std::collections::HashSet::from([id.to_string()]);
+    let mut depth = 0;
+    while let Some(parent_id) = next {
+        anyhow::ensure!(seen.insert(parent_id.clone()), "tab hierarchy cannot contain a cycle");
+        depth += 1;
+        anyhow::ensure!(depth <= max_depth, "maximum tab depth ({max_depth}) exceeded");
+        let (parent_repo, parent_status, ancestor): (String, String, Option<String>) = conn
+            .query_row(
+                "SELECT w.repo_id, w.status, s.parent_session_id FROM sessions s JOIN workspaces w ON w.id = s.workspace_id WHERE s.id = ?1",
+                [&parent_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map_err(|_| anyhow::anyhow!("parent chat does not exist"))?;
+        anyhow::ensure!(repo == parent_repo, "parent and child chats must belong to the same repository");
+        anyhow::ensure!(parent_status != "archived", "parent chat belongs to an archived workspace");
+        next = ancestor;
+    }
+    Ok(())
+}
+
 fn row_to_session(r: &rusqlite::Row) -> rusqlite::Result<Session> {
     Ok(Session {
         id: r.get(0)?,
@@ -530,6 +546,7 @@ fn row_to_session(r: &rusqlite::Row) -> rusqlite::Result<Session> {
         created_at: r.get(5)?,
         model: r.get(6)?,
         effort: r.get(7)?,
+        parent_session_id: r.get(8)?,
     })
 }
 
@@ -544,11 +561,7 @@ mod tests {
 
     #[test]
     fn coalesces_consecutive_chunks_of_same_message() {
-        let out = coalesce_chunks(vec![
-            ("s".into(), chunk("hel", "m1")),
-            ("s".into(), chunk("lo", "m1")),
-            ("s".into(), chunk("x", "m2")),
-        ]);
+        let out = coalesce_chunks(vec![("s".into(), chunk("hel", "m1")), ("s".into(), chunk("lo", "m1")), ("s".into(), chunk("x", "m2"))]);
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].1.pointer("/update/content/text").unwrap(), "hello");
     }
@@ -571,9 +584,7 @@ mod tests {
         let store = Store::open(&dir.path().join("db.sqlite")).unwrap();
         let names = |s: &Store| s.repos().unwrap().into_iter().map(|r| r.name).collect::<Vec<_>>();
         for name in ["b", "a", "c"] {
-            store
-                .add_repo(&Repo { id: name.into(), name: name.into(), path: format!("/{name}"), default_branch: "main".into() })
-                .unwrap();
+            store.add_repo(&Repo { id: name.into(), name: name.into(), path: format!("/{name}"), default_branch: "main".into() }).unwrap();
         }
         assert_eq!(names(&store), ["b", "a", "c"]);
         store.reorder_repos(&["c".into(), "b".into(), "a".into()]).unwrap();

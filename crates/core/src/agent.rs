@@ -41,7 +41,6 @@ pub fn builtin_agents() -> Vec<AgentDef> {
     ]
 }
 
-
 const REPLAY_DONE: &str = "replay-done";
 
 struct LiveSession {
@@ -78,6 +77,20 @@ struct LiveSession {
     /// Context for the agent that goes along with the next prompt (e.g. that
     /// the user restored the files to an earlier checkpoint).
     notes: Mutex<Vec<String>>,
+    /// Available during handshake too, without waiting for the connect lock.
+    transport: Mutex<Option<Arc<AcpConnection>>>,
+    closed: AtomicBool,
+    cancelled: AtomicBool,
+}
+
+struct Connecting(Option<Arc<AcpConnection>>);
+
+impl Drop for Connecting {
+    fn drop(&mut self) {
+        if let Some(conn) = self.0.take() {
+            conn.kill();
+        }
+    }
 }
 
 pub struct Agents {
@@ -86,11 +99,45 @@ pub struct Agents {
     sessions: Mutex<HashMap<String, Arc<LiveSession>>>,
     defs: Mutex<Vec<AgentDef>>,
     file_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    pub(crate) admissions: crate::supervision::Admissions,
+    core: Mutex<Option<std::sync::Weak<crate::Core>>>,
 }
 
 impl Agents {
     pub fn new(store: Arc<Store>, emitter: Emitter) -> Self {
-        Self { store, emitter, sessions: Mutex::default(), defs: Mutex::new(builtin_agents()), file_locks: Mutex::default() }
+        Self {
+            store,
+            emitter,
+            sessions: Mutex::default(),
+            defs: Mutex::new(builtin_agents()),
+            file_locks: Mutex::default(),
+            admissions: Default::default(),
+            core: Mutex::default(),
+        }
+    }
+
+    pub fn attach_core(&self, core: std::sync::Weak<crate::Core>) {
+        *self.core.lock() = Some(core);
+    }
+    fn delegation_servers(&self, session: &str) -> Value {
+            if self.is_reviewer(session) { return json!([]); }
+            let core = self.core.lock().as_ref().and_then(|core| core.upgrade());
+            core.map(|core| core.delegation_servers(session)).unwrap_or_else(|| json!([]))
+        }
+
+    pub(crate) async fn prepare_reviewer(self: &Arc<Self>, session_id: &str) -> Result<String> {
+        let s = self.get(session_id)?;
+        self.connect(&s).await?;
+        let config = s.config.lock();
+        let (_, value) = reviewer_mode(&config).ok_or_else(|| anyhow!("agent does not advertise a restricted review mode"))?;
+        Ok(if value == "read-only" { "agent-enforced read-only" } else { "plan mode; permissions denied; not sandboxed" }.into())
+    }
+
+    pub(crate) fn is_reviewer(&self, session_id: &str) -> bool {
+        match self.store.setting(&format!("review_session:{session_id}")) {
+            Ok(value) => value.is_some(),
+            Err(_) => true,
+        }
     }
 
     pub fn defs(&self) -> Vec<AgentDef> {
@@ -105,12 +152,7 @@ impl Agents {
     }
 
     pub fn def(&self, id: &str) -> Result<AgentDef> {
-        self.defs
-            .lock()
-            .iter()
-            .find(|a| a.id == id)
-            .cloned()
-            .ok_or_else(|| anyhow!("unknown agent `{id}`"))
+        self.defs.lock().iter().find(|a| a.id == id).cloned().ok_or_else(|| anyhow!("unknown agent `{id}`"))
     }
 
     fn live(&self, session: &Session, cwd: PathBuf) -> Result<Arc<LiveSession>> {
@@ -138,6 +180,9 @@ impl Agents {
             turn_cost: Mutex::new(None),
             initial: Mutex::new(None),
             notes: Mutex::default(),
+            transport: Mutex::new(None),
+            closed: AtomicBool::new(false),
+            cancelled: AtomicBool::new(false),
         });
         Ok(self.sessions.lock().entry(session.id.clone()).or_insert(live).clone())
     }
@@ -152,11 +197,13 @@ impl Agents {
     }
 
     fn state(&self, s: &LiveSession, state: &str, error: Option<String>) {
-        self.emitter.emit(Event::SessionState {
-            session_id: s.id.clone(),
-            state: state.into(),
-            error,
-        });
+        if state == "error" {
+            let core = self.core.lock().as_ref().and_then(|core| core.upgrade());
+            if let Some(core) = core {
+                core.delegation_failure(&s.id, error.as_deref().unwrap_or("unknown agent error"));
+            }
+        }
+        self.emitter.emit(Event::SessionState { session_id: s.id.clone(), state: state.into(), error });
     }
 
     /// Start the agent in the background so config options (model, mode) are
@@ -174,26 +221,45 @@ impl Agents {
 
     async fn connect(self: &Arc<Self>, s: &Arc<LiveSession>) -> Result<Arc<AcpConnection>> {
         let mut guard = s.conn.lock().await;
+        if !s.running.load(Ordering::SeqCst) {
+            s.cancelled.store(false, Ordering::SeqCst);
+        }
+        if s.closed.load(Ordering::SeqCst) || s.cancelled.load(Ordering::SeqCst) {
+            bail!("agent session was closed or canceled before connecting");
+        }
         if let Some(conn) = guard.as_ref().filter(|c| c.is_alive()) {
+            if self.is_reviewer(&s.id) { self.apply_mode(s, conn).await?; }
             return Ok(conn.clone());
         }
         if !s.running.load(Ordering::SeqCst) {
             self.state(s, "connecting", None);
         }
-        // The worktree may still be checking out in the background.
-        loop {
-            match self.store.workspace(&s.workspace_id)?.status.as_str() {
-                "creating" => tokio::time::sleep(std::time::Duration::from_millis(150)).await,
-                "failed" => bail!("the workspace's worktree could not be created (see the Setup tab)"),
-                _ => break,
+        let ready = async {
+            loop {
+                if s.closed.load(Ordering::SeqCst) || s.cancelled.load(Ordering::SeqCst) {
+                    bail!("agent startup canceled");
+                }
+                match self.store.workspace(&s.workspace_id)?.status.as_str() {
+                    "creating" => tokio::time::sleep(std::time::Duration::from_millis(150)).await,
+                    "failed" => bail!("the workspace's worktree could not be created (see the Setup tab)"),
+                    _ => break,
+                }
             }
-        }
-
+            Ok(())
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(300), ready)
+            .await
+            .map_err(|_| anyhow!("workspace setup timed out after 5 minutes; see the Setup tab"))??;
         let (conn, rx) = AcpConnection::spawn(&s.agent.command, &s.agent.args, &s.cwd)?;
-        // A new agent process starts its running cost total from scratch.
+        let mut attempt = Connecting(Some(conn.clone()));
+        *s.transport.lock() = Some(conn.clone());
+        self.resolve_requests(s);
+        s.replaying.store(false, Ordering::SeqCst);
         *s.cost_reported.lock() = None;
         tokio::spawn(self.clone().handle_incoming(s.clone(), conn.clone(), rx));
-
+        if s.closed.load(Ordering::SeqCst) || s.cancelled.load(Ordering::SeqCst) {
+            bail!("agent startup canceled");
+        }
         let init = conn
             .request(
                 "initialize",
@@ -202,8 +268,6 @@ impl Agents {
                     "clientCapabilities": {
                         "fs": {"readTextFile": false, "writeTextFile": false},
                         "terminal": false,
-                        // Lets agents ask the user structured questions
-                        // (Claude's AskUserQuestion, Codex's request_user_input).
                         "elicitation": {"form": {}}
                     },
                     "clientInfo": {"name": "suneiro", "version": env!("CARGO_PKG_VERSION")}
@@ -211,59 +275,107 @@ impl Agents {
             )
             .await?;
         let caps = init.get("agentCapabilities").cloned().unwrap_or(Value::Null);
+        self.emitter.emit(Event::SessionCapabilities {
+            session_id: s.id.clone(),
+            capabilities: crate::capabilities::SessionCapabilities::from_initialize(&init),
+        });
         s.steering.store(
-            init.pointer("/_meta/steering/supported").and_then(|v| v.as_bool()).unwrap_or(false),
+            init.pointer("/_meta/steering/supported").and_then(Value::as_bool).unwrap_or(false),
             Ordering::SeqCst,
         );
         s.images.store(
-            caps.pointer("/promptCapabilities/image").and_then(|v| v.as_bool()).unwrap_or(false),
+            caps.pointer("/promptCapabilities/image").and_then(Value::as_bool).unwrap_or(false),
             Ordering::SeqCst,
         );
         let cwd = s.cwd.to_string_lossy().to_string();
-
+        let mcp_servers = self.delegation_servers(&s.id);
         let existing = s.acp_session_id.lock().clone();
-        let mut response = None;
-        if let Some(id) = &existing {
-            let params = json!({"sessionId": id, "cwd": cwd, "mcpServers": []});
-            if caps.pointer("/sessionCapabilities/resume").is_some() {
-                response = conn.request("session/resume", params).await.ok();
-            } else if caps.get("loadSession").and_then(|v| v.as_bool()) == Some(true) {
-                // session/load replays history as updates; we already have it stored.
+        let is_new = existing.is_none();
+        let response = if let Some(id) = &existing {
+            let params = json!({"sessionId": id, "cwd": cwd, "mcpServers": mcp_servers});
+            let result = if caps.pointer("/sessionCapabilities/resume").is_some_and(Value::is_object) {
+                conn.request("session/resume", params).await
+            } else if caps.get("loadSession").and_then(Value::as_bool) == Some(true) {
                 s.replaying.store(true, Ordering::SeqCst);
-                response = conn.request("session/load", params).await.ok();
+                let result = conn.request("session/load", params).await;
                 conn.mark(REPLAY_DONE);
+                result
+            } else {
+                bail!("agent cannot resume saved conversation `{id}`; start a new chat explicitly to keep the existing conversation intact");
+            };
+            result.map_err(|e| anyhow!("could not resume saved conversation `{id}`: {e:#}. Existing conversation was kept; no prompt was replayed. Retry or start a new chat explicitly"))?
+        } else {
+            let response = conn.request("session/new", json!({"cwd": cwd, "mcpServers": mcp_servers})).await?;
+            let id = response
+                .get("sessionId")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| anyhow!("agent returned no sessionId"))?;
+            self.store.set_acp_session_id(&s.id, id)?;
+            *s.acp_session_id.lock() = Some(id.to_string());
+            response
+        };
+        if s.agent.id == "opencode" {
+            let config = &response["configOptions"];
+            let initial = s.initial.lock().clone();
+            let validation = crate::opencode::validate_initial(
+                config,
+                initial.as_ref().and_then(|(m, _)| m.as_deref()),
+                initial.as_ref().and_then(|(_, e)| e.as_deref()),
+            );
+            if let Err(error) = validation {
+                conn.kill();
+                return Err(error);
             }
         }
-        let is_new = response.is_none();
-        let response = match response {
-            Some(r) => r,
-            None => {
-                let r = conn.request("session/new", json!({"cwd": cwd, "mcpServers": []})).await?;
-                let id = r
-                    .get("sessionId")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| anyhow!("agent returned no sessionId"))?;
-                *s.acp_session_id.lock() = Some(id.to_string());
-                self.store.set_acp_session_id(&s.id, id)?;
-                r
-            }
-        };
+
         if let Some(opts) = response.get("configOptions").filter(|v| v.is_array()) {
             self.set_config_options(s, opts.clone());
         }
-        if is_new {
+        if is_new || (matches!(s.agent.id.as_str(), "opencode" | "codex") && s.initial.lock().is_some()) {
+            // Claude permission-mode changes can switch models; apply the user's pin last.
+            if s.agent.id == "claude" {
+                if let Err(e) = self.apply_mode(s, &conn).await {
+                    log::warn!("could not apply permission mode: {e:#}");
+                }
+            }
+
             if let Err(e) = self.apply_initial(s, &conn).await {
+                if matches!(s.agent.id.as_str(), "opencode" | "codex") {
+                    conn.kill();
+                    return Err(e);
+                }
                 log::warn!("could not apply initial model: {e:#}");
             }
+            if s.agent.id == "opencode" { s.initial.lock().take(); }
         }
         if let Err(e) = self.apply_mode(s, &conn).await {
+            if s.agent.id == "codex" || self.is_reviewer(&s.id) {
+                conn.kill();
+                return Err(e);
+            }
             log::warn!("could not apply permission mode: {e:#}");
+        }
+        if !conn.is_alive() || s.closed.load(Ordering::SeqCst) || s.cancelled.load(Ordering::SeqCst) {
+            bail!("agent disconnected or startup canceled before the session was ready");
         }
         if !s.running.load(Ordering::SeqCst) {
             self.state(s, "idle", None);
         }
         *guard = Some(conn.clone());
+        attempt.0.take();
         Ok(conn)
+    }
+
+    fn resolve_requests(&self, s: &LiveSession) {
+        let permissions: Vec<String> = s.permissions.lock().drain().map(|(id, _)| id).collect();
+        for request_id in permissions {
+            self.emitter.emit(Event::PermissionResolved { session_id: s.id.clone(), request_id });
+        }
+        let questions: Vec<String> = s.questions.lock().drain().map(|(id, _)| id).collect();
+        for request_id in questions {
+            self.emitter.emit(Event::QuestionResolved { session_id: s.id.clone(), request_id });
+        }
     }
 
     async fn handle_incoming(
@@ -273,7 +385,13 @@ impl Agents {
         mut rx: mpsc::UnboundedReceiver<Incoming>,
     ) {
         while let Some(msg) = rx.recv().await {
+            if !s.transport.lock().as_ref().is_some_and(|active| Arc::ptr_eq(active, &conn)) {
+                break;
+            }
             match msg {
+                Incoming::Barrier(done) => {
+                    let _ = done.send(());
+                }
                 Incoming::Marker(REPLAY_DONE) => s.replaying.store(false, Ordering::SeqCst),
                 Incoming::Marker(_) => {}
                 Incoming::Notification { method, params } if method == "session/update" => {
@@ -285,6 +403,9 @@ impl Agents {
                 }
                 Incoming::Notification { .. } => {}
                 Incoming::Request { id, method, params } => match method.as_str() {
+                    "session/request_permission" if self.is_reviewer(&s.id) => {
+                        let _ = conn.respond(id, json!({"outcome": {"outcome": "cancelled"}})).await;
+                    }
                     "session/request_permission" if !s.plan.load(Ordering::SeqCst) => {
                         let options = params.get("options").cloned().unwrap_or(json!([]));
                         let outcome = match auto_allow_option(&options) {
@@ -324,12 +445,10 @@ impl Agents {
                     }
                 },
                 Incoming::Closed { stderr_tail } => {
+                    s.replaying.store(false, Ordering::SeqCst);
                     let pending: Vec<String> = s.permissions.lock().drain().map(|(k, _)| k).collect();
                     for request_id in pending {
-                        self.emitter.emit(Event::PermissionResolved {
-                            session_id: s.id.clone(),
-                            request_id,
-                        });
+                        self.emitter.emit(Event::PermissionResolved { session_id: s.id.clone(), request_id });
                     }
                     let questions: Vec<String> = s.questions.lock().drain().map(|(k, _)| k).collect();
                     for request_id in questions {
@@ -404,13 +523,14 @@ impl Agents {
         if s.acp_session_id.lock().is_none() {
             return 0.0;
         }
-        let recorded: f64 = self
-            .store
-            .usage_for_session(&s.id)
-            .map(|rows| rows.iter().filter_map(|u| u.cost_usd).sum())
-            .unwrap_or(0.0);
+        let recorded: f64 =
+            self.store.usage_for_session(&s.id).map(|rows| rows.iter().filter_map(|u| u.cost_usd).sum()).unwrap_or(0.0);
         // If the reported total is below what we recorded, it restarted at zero.
-        if total + 1e-9 >= recorded { recorded } else { 0.0 }
+        if total + 1e-9 >= recorded {
+            recorded
+        } else {
+            0.0
+        }
     }
 
     /// Store a finished turn's tokens and cost, and tell the UI.
@@ -424,10 +544,13 @@ impl Agents {
         if input + cached + output == 0 && cost.is_none() {
             return;
         }
-        let model = crate::catalog::model_option(&s.config.lock())
-            .and_then(|o| o["currentValue"].as_str().map(str::to_string))
-            .or_else(|| result.pointer("/_meta/quota/model_usage/0/model").and_then(|m| m.as_str()).map(str::to_string))
-            .unwrap_or_else(|| "unknown".into());
+        let configured = crate::catalog::model_option(&s.config.lock())
+            .and_then(|o| o["currentValue"].as_str().map(str::to_string));
+        let model = if s.agent.id == "codex" {
+            crate::codex::reported_model(result).map(str::to_string).or(configured)
+        } else {
+            configured.or_else(|| result.pointer("/_meta/quota/model_usage/0/model").and_then(|m| m.as_str()).map(str::to_string))
+        }.unwrap_or_else(|| "unknown".into());
         let Ok(ws) = self.store.workspace(&s.workspace_id) else { return };
         let record = crate::store::UsageRecord {
             session_id: s.id.clone(),
@@ -443,10 +566,7 @@ impl Agents {
         };
         if self.store.add_usage(&record).is_ok() {
             let pricing = crate::usage::load_pricing(&self.store);
-            self.emitter.emit(Event::Usage {
-                session_id: s.id.clone(),
-                usage: crate::usage::price(record, &pricing),
-            });
+            self.emitter.emit(Event::Usage { session_id: s.id.clone(), usage: crate::usage::price(record, &pricing) });
         }
     }
 
@@ -455,10 +575,8 @@ impl Agents {
             crate::catalog::save(&self.store, &s.agent.id, &catalog);
         }
         let current = |o: Option<&Value>| o.and_then(|o| o["currentValue"].as_str()).map(str::to_string);
-        let (model, effort) = (
-            current(crate::catalog::model_option(&opts)),
-            current(crate::catalog::effort_option(&opts)),
-        );
+        let (model, effort) =
+            (current(crate::catalog::model_option(&opts)), current(crate::catalog::effort_option(&opts)));
         if model.is_some() || effort.is_some() {
             let _ = self.store.set_session_model(&s.id, model.as_deref(), effort.as_deref());
         }
@@ -469,7 +587,7 @@ impl Agents {
     /// When the user approves a plan, agents leave plan mode on their own;
     /// follow them back to auto-accept.
     fn check_plan_exit(self: &Arc<Self>, s: &Arc<LiveSession>) {
-        if !s.plan.load(Ordering::SeqCst) || s.applying_mode.load(Ordering::SeqCst) {
+        if self.is_reviewer(&s.id) || !s.plan.load(Ordering::SeqCst) || s.applying_mode.load(Ordering::SeqCst) {
             return;
         }
         if is_plan(&s.config.lock()) {
@@ -489,7 +607,16 @@ impl Agents {
 
     /// Push our plan/auto-accept choice into the agent's own config options.
     async fn apply_mode(&self, s: &LiveSession, conn: &AcpConnection) -> Result<()> {
-        let changes = mode_changes(&s.config.lock(), s.plan.load(Ordering::SeqCst));
+        let changes = if self.is_reviewer(&s.id) {
+            let config = s.config.lock();
+            let modes = reviewer_modes(&config).ok_or_else(|| anyhow!("agent does not advertise a restricted review mode"))?;
+            if modes.iter().all(|(id, value)| option(&config, id).is_some_and(|o| o["currentValue"] == *value)) { Vec::new() } else { modes }
+        } else if s.agent.id == "codex" {
+            crate::codex::mode_changes(&s.config.lock(), s.plan.load(Ordering::SeqCst))?
+        } else {
+            mode_changes(&s.config.lock(), s.plan.load(Ordering::SeqCst))
+        };
+
         if changes.is_empty() {
             return Ok(());
         }
@@ -497,13 +624,7 @@ impl Agents {
         let acp_id = s.acp_session_id.lock().clone().unwrap_or_default();
         let mut result = Ok(());
         for (config_id, value) in changes {
-            match conn
-                .request(
-                    "session/set_config_option",
-                    json!({"sessionId": acp_id, "configId": config_id, "value": value}),
-                )
-                .await
-            {
+            match conn.request("session/set_config_option", json!({"sessionId": acp_id, "configId": config_id, "value": value})).await {
                 Ok(r) => {
                     if let Some(opts) = r.get("configOptions").filter(|v| v.is_array()) {
                         self.set_config_options(s, opts.clone());
@@ -513,6 +634,11 @@ impl Agents {
             }
         }
         s.applying_mode.store(false, Ordering::SeqCst);
+        if self.is_reviewer(&s.id) {
+            let config = s.config.lock();
+            let modes = reviewer_modes(&config).ok_or_else(|| anyhow!("review mode unavailable"))?;
+            if !modes.iter().all(|(id, value)| option(&config, id).is_some_and(|o| o["currentValue"] == *value)) { bail!("agent did not confirm restricted review mode"); }
+        }
         result
     }
 
@@ -528,7 +654,9 @@ impl Agents {
     }
 
     async fn apply_initial(&self, s: &LiveSession, conn: &AcpConnection) -> Result<()> {
-        let Some((model, effort)) = s.initial.lock().take() else { return Ok(()) };
+        let initial = if matches!(s.agent.id.as_str(), "opencode" | "codex") { s.initial.lock().clone() } else { s.initial.lock().take() };
+        let Some((model, effort)) = initial else { return Ok(()) };
+        let (model, effort) = if s.agent.id == "codex" { crate::codex::preset(model, effort) } else { (model, effort) };
         let acp_id = s.acp_session_id.lock().clone().unwrap_or_default();
         // Model first: the available effort levels can depend on it.
         for (is_model, want) in [(true, model), (false, effort)] {
@@ -540,26 +668,32 @@ impl Agents {
                 } else {
                     crate::catalog::effort_option(&config)
                 };
+                if s.agent.id == "opencode" {
+                    let id = option.and_then(|o| o["id"].as_str()).unwrap_or(if is_model { "model" } else { "effort" });
+                    crate::opencode::validate_control(&config, id, &json!(want))?;
+                }
+                if s.agent.id == "codex" && !option.is_some_and(|o| crate::catalog::choices(o).iter().any(|c| c.value == want)) {
+                    bail!("Codex does not support requested {} `{want}` for this session", if is_model { "model" } else { "reasoning effort" });
+                }
                 option.and_then(|o| {
                     let valid = crate::catalog::choices(o).iter().any(|c| c.value == want);
                     (valid && o["currentValue"] != want.as_str()).then(|| o["id"].as_str().unwrap_or("").to_string())
                 })
             };
             let Some(config_id) = change else { continue };
-            let r = conn
-                .request(
-                    "session/set_config_option",
-                    json!({"sessionId": acp_id, "configId": config_id, "value": want}),
-                )
-                .await?;
+            let r = conn.request("session/set_config_option", json!({"sessionId": acp_id, "configId": config_id, "value": want})).await?;
             if let Some(opts) = r.get("configOptions").filter(|v| v.is_array()) {
                 self.set_config_options(s, opts.clone());
             }
+        }
+        if s.agent.id == "codex" {
+            s.initial.lock().take();
         }
         Ok(())
     }
 
     pub async fn set_plan_mode(self: &Arc<Self>, session_id: &str, plan: bool) -> Result<()> {
+        if self.is_reviewer(session_id) && !plan { bail!("reviewer permissions cannot be elevated; create a task instead"); }
         let s = self.get(session_id)?;
         s.plan.store(plan, Ordering::SeqCst);
         self.emitter.emit(Event::SessionMode { session_id: s.id.clone(), plan });
@@ -576,7 +710,14 @@ impl Agents {
         }
         let conn = s.conn.lock().await.clone();
         match conn {
-            Some(conn) => self.apply_mode(&s, &conn).await,
+            Some(conn) => {
+                let result = self.apply_mode(&s, &conn).await;
+                if s.agent.id == "codex" && result.is_err() {
+                    conn.kill();
+                    s.conn.lock().await.take();
+                }
+                result
+            }
             None => Ok(()), // applied on connect
         }
     }
@@ -596,11 +737,7 @@ impl Agents {
     fn auto_title(self: &Arc<Self>, s: &Arc<LiveSession>, text: &str) {
         let quick = crate::title::quick_title(text);
         self.set_title(s, &quick);
-        let title_workspace = self
-            .store
-            .workspace(&s.workspace_id)
-            .map(|w| w.title.is_empty())
-            .unwrap_or(false);
+        let title_workspace = self.store.workspace(&s.workspace_id).map(|w| w.title.is_empty()).unwrap_or(false);
         if title_workspace {
             self.set_workspace_title(&s.workspace_id, &quick);
         }
@@ -637,13 +774,8 @@ impl Agents {
             waited += 1;
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         };
-        let settings: crate::setup::Settings = self
-            .store
-            .setting("settings")
-            .ok()
-            .flatten()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
+        let settings: crate::setup::Settings =
+            self.store.setting("settings").ok().flatten().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
         let Some(slug) = crate::workspace::branch_slug(title) else { return };
         let path = std::path::Path::new(&ws.path);
         let pushed = crate::git::has_upstream(path).await || crate::git::remote_branch_exists(path, &ws.branch).await;
@@ -670,10 +802,7 @@ impl Agents {
             return;
         }
         let _ = self.store.set_workspace_title(workspace_id, title);
-        self.emitter.emit(Event::WorkspaceTitle {
-            workspace_id: workspace_id.into(),
-            title: title.into(),
-        });
+        self.emitter.emit(Event::WorkspaceTitle { workspace_id: workspace_id.into(), title: title.into() });
     }
 
     pub fn prompt(self: &Arc<Self>, session_id: &str, text: String) -> Result<()> {
@@ -682,58 +811,76 @@ impl Agents {
 
     /// Prompt with attached images (paths of image files).
     pub fn prompt_with(self: &Arc<Self>, session_id: &str, text: String, images: Vec<String>) -> Result<()> {
+        self.prompt_with_options(session_id, text, images, true)
+    }
+
+    /// Send an approved brief literally: no implicit @file attachments or queued context.
+    pub fn prompt_brief(self: &Arc<Self>, session_id: &str, text: String) -> Result<()> {
+        self.prompt_with_options(session_id, text, Vec::new(), false)
+    }
+
+    fn prompt_with_options(self: &Arc<Self>, session_id: &str, text: String, images: Vec<String>, expand_context: bool) -> Result<()> {
+        let expand_context = expand_context && !self.is_reviewer(session_id);
         let s = self.get(session_id)?;
+        let lock = self.workspace_lock(&s.workspace_id);
+        let _guard = lock.try_lock().map_err(|_| anyhow!("workspace operation is running; wait for it to finish"))?;
+        let ws = self.store.workspace(&s.workspace_id)?;
+        let permit = self.admissions.admit(&self.store, session_id, &ws.repo_id)?;
         if s.running.swap(true, Ordering::SeqCst) {
             bail!("agent is still working");
         }
+        s.cancelled.store(false, Ordering::SeqCst);
         if !s.titled.load(Ordering::SeqCst) && !text.trim().is_empty() {
             self.auto_title(&s, &text);
         }
-        self.emitter.emit(Event::UserMessage {
-            session_id: s.id.clone(),
-            text: text.clone(),
-            ts: now(),
-            images: images.clone(),
-        });
+        self.emitter.emit(Event::UserMessage { session_id: s.id.clone(), text: text.clone(), ts: now(), images: images.clone() });
         self.state(&s, "running", None);
-        self.emitter.emit(Event::WorkspaceStatus {
-            workspace_id: s.workspace_id.clone(),
-            status: "dirty".into(),
-        });
+        self.emitter.emit(Event::WorkspaceStatus { workspace_id: s.workspace_id.clone(), status: "dirty".into() });
 
         let this = self.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             let result = async {
                 let conn = this.connect(&s).await?;
-                // After connecting: the worktree is ready by then.
                 this.checkpoint(&s).await;
                 let acp_id = s.acp_session_id.lock().clone().unwrap_or_default();
-                let mut blocks = prompt_blocks(&text, &s.cwd);
+                let literal = !expand_context || this.is_reviewer(&s.id) || this.store.setting(&format!("literal_context:{}", s.id))?.is_some();
+                let mut blocks = if literal { json!([{"type": "text", "text": text}]) } else { prompt_blocks(&text, &s.cwd) };
                 if let Some(list) = blocks.as_array_mut() {
                     list.extend(image_blocks(&images, s.images.load(Ordering::SeqCst)));
                 }
-                let notes: Vec<String> = s.notes.lock().drain(..).collect();
+                let notes: Vec<String> = if expand_context { s.notes.lock().drain(..).collect() } else { Vec::new() };
                 if let (false, Some(list)) = (notes.is_empty(), blocks.as_array_mut()) {
                     list.push(json!({"type": "text", "text": format!("<system-reminder>\n{}\n</system-reminder>", notes.join("\n"))}));
                 }
-                let r = conn.request("session/prompt", json!({"sessionId": acp_id, "prompt": blocks})).await;
+
+                let r = if s.closed.load(Ordering::SeqCst) || s.cancelled.load(Ordering::SeqCst) {
+                    Err(anyhow!("prompt canceled before it was sent"))
+                } else {
+                    conn.request("session/prompt", json!({"sessionId": acp_id, "prompt": blocks})).await
+                };
+                let r = match r { Ok(value) => conn.drain().await.map(|()| value), Err(error) => Err(error) };
+
+                let r = if s.agent.id == "opencode" {
+                    crate::opencode::prompt_result(r, !images.is_empty() && s.images.load(Ordering::SeqCst))
+                } else {
+                    r
+                };
+
                 if r.is_err() {
-                    // Keep them for the next attempt.
                     let mut pending = s.notes.lock();
                     let later = std::mem::take(&mut *pending);
                     *pending = notes.into_iter().chain(later).collect();
                 }
                 r
-            }
-            .await;
+            }.await;
             s.running.store(false, Ordering::SeqCst);
             if let Ok(r) = &result {
                 this.record_usage(&s, r);
             }
             match result {
                 Ok(r) => {
-                    let stop_reason =
-                        r.get("stopReason").and_then(|v| v.as_str()).unwrap_or("end_turn");
+                    let stop_reason = r.get("stopReason").and_then(Value::as_str).unwrap_or("end_turn");
                     this.emitter.emit(Event::TurnEnd {
                         session_id: s.id.clone(),
                         stop_reason: stop_reason.into(),
@@ -743,10 +890,7 @@ impl Agents {
                 }
                 Err(e) => this.state(&s, "error", Some(format!("{e:#}"))),
             }
-            this.emitter.emit(Event::WorkspaceStatus {
-                workspace_id: s.workspace_id.clone(),
-                status: "dirty".into(),
-            });
+            this.emitter.emit(Event::WorkspaceStatus { workspace_id: s.workspace_id.clone(), status: "dirty".into() });
         });
         Ok(())
     }
@@ -777,10 +921,7 @@ impl Agents {
 
     /// Whether any chat of the workspace is in the middle of a turn.
     pub fn workspace_busy(&self, workspace_id: &str) -> bool {
-        self.sessions
-            .lock()
-            .values()
-            .any(|s| s.workspace_id == workspace_id && s.running.load(Ordering::SeqCst))
+        self.sessions.lock().values().any(|s| s.workspace_id == workspace_id && s.running.load(Ordering::SeqCst))
     }
 
     /// Deliver a message now. If a turn is running, agents that support
@@ -791,7 +932,12 @@ impl Agents {
         self.steer_with(session_id, text, Vec::new()).await
     }
 
-    pub async fn steer_with(self: &Arc<Self>, session_id: &str, text: String, images: Vec<String>) -> Result<&'static str> {
+    pub async fn steer_with(
+        self: &Arc<Self>,
+        session_id: &str,
+        text: String,
+        images: Vec<String>,
+    ) -> Result<&'static str> {
         let s = self.get(session_id)?;
         if !s.running.load(Ordering::SeqCst) {
             self.prompt_with(session_id, text, images)?;
@@ -842,44 +988,64 @@ impl Agents {
 
     pub async fn cancel(&self, session_id: &str) -> Result<()> {
         let s = self.get(session_id)?;
-        let conn = s.conn.lock().await.clone();
+        let connecting = s.conn.try_lock().is_err();
+        if !connecting && !s.running.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        s.cancelled.store(true, Ordering::SeqCst);
+        let conn = s.transport.lock().clone();
         let Some(conn) = conn else { return Ok(()) };
-        let pending: Vec<(String, Value)> = s.permissions.lock().drain().collect();
-        for (request_id, id) in pending {
-            let _ = conn.respond(id, json!({"outcome": {"outcome": "cancelled"}})).await;
-            self.emitter.emit(Event::PermissionResolved { session_id: s.id.clone(), request_id });
+        if connecting {
+            conn.kill();
+            return Ok(());
+        }
+        let permissions: Vec<(String, Value)> = s.permissions.lock().drain().collect();
+        for (request_id, _) in &permissions {
+            self.emitter.emit(Event::PermissionResolved { session_id: s.id.clone(), request_id: request_id.clone() });
         }
         let questions: Vec<(String, Value)> = s.questions.lock().drain().collect();
-        for (request_id, id) in questions {
-            let _ = conn.respond(id, json!({"action": "cancel"})).await;
-            self.emitter.emit(Event::QuestionResolved { session_id: s.id.clone(), request_id });
+        for (request_id, _) in &questions {
+            self.emitter.emit(Event::QuestionResolved { session_id: s.id.clone(), request_id: request_id.clone() });
         }
-        let acp_id = s.acp_session_id.lock().clone().unwrap_or_default();
-        conn.notify("session/cancel", json!({"sessionId": acp_id})).await
+        let cancel = async {
+            for (_, id) in permissions {
+                conn.respond(id, json!({"outcome": {"outcome": "cancelled"}})).await?;
+            }
+            for (_, id) in questions {
+                conn.respond(id, json!({"action": "cancel"})).await?;
+            }
+            let acp_id = s.acp_session_id.lock().clone().unwrap_or_default();
+            conn.notify("session/cancel", json!({"sessionId": acp_id})).await?;
+            while s.running.load(Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            Ok::<(), anyhow::Error>(())
+        };
+        // Includes blocked replies and stdin writes, not just the response grace period.
+        match tokio::time::timeout(std::time::Duration::from_secs(5), cancel).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => {
+                conn.kill();
+                Err(e)
+            }
+            Err(_) => {
+                conn.kill();
+                Ok(())
+            }
+        }
     }
 
-    pub async fn respond_permission(
-        &self,
-        session_id: &str,
-        request_id: &str,
-        option_id: Option<String>,
-    ) -> Result<()> {
+    pub async fn respond_permission(&self, session_id: &str, request_id: &str, option_id: Option<String>) -> Result<()> {
         let s = self.get(session_id)?;
-        let id = s
-            .permissions
-            .lock()
-            .remove(request_id)
-            .ok_or_else(|| anyhow!("permission request already resolved"))?;
+        let id =
+            s.permissions.lock().remove(request_id).ok_or_else(|| anyhow!("permission request already resolved"))?;
         let conn = s.conn.lock().await.clone().ok_or_else(|| anyhow!("agent not connected"))?;
         let outcome = match option_id {
             Some(option_id) => json!({"outcome": "selected", "optionId": option_id}),
             None => json!({"outcome": "cancelled"}),
         };
         conn.respond(id, json!({"outcome": outcome})).await?;
-        self.emitter.emit(Event::PermissionResolved {
-            session_id: s.id.clone(),
-            request_id: request_id.into(),
-        });
+        self.emitter.emit(Event::PermissionResolved { session_id: s.id.clone(), request_id: request_id.into() });
         Ok(())
     }
 
@@ -887,63 +1053,61 @@ impl Agents {
     /// `{"action": "decline"}` (skip) or `{"action": "cancel"}`.
     pub async fn answer_question(&self, session_id: &str, request_id: &str, response: Value) -> Result<()> {
         let s = self.get(session_id)?;
-        let id = s
-            .questions
-            .lock()
-            .remove(request_id)
-            .ok_or_else(|| anyhow!("question already answered"))?;
+        let id = s.questions.lock().remove(request_id).ok_or_else(|| anyhow!("question already answered"))?;
         let conn = s.conn.lock().await.clone().ok_or_else(|| anyhow!("agent not connected"))?;
         conn.respond(id, response).await?;
         self.emitter.emit(Event::QuestionResolved { session_id: s.id.clone(), request_id: request_id.into() });
         Ok(())
     }
 
-    pub async fn set_config(
-        self: &Arc<Self>,
-        session_id: &str,
-        config_id: &str,
-        value: Value,
-    ) -> Result<()> {
+    pub async fn set_config(self: &Arc<Self>, session_id: &str, config_id: &str, value: Value) -> Result<()> {
+        if self.is_reviewer(session_id) { bail!("reviewer configuration is fixed; create a task instead"); }
         let s = self.get(session_id)?;
+        // A stale OpenCode loadout must not trap the chat on a failed preset.
+        if s.agent.id == "opencode" && config_id == "model" {
+            if let Some(model) = value.as_str() {
+                if let Some(initial) = s.initial.lock().as_mut() {
+                    *initial = (Some(model.to_string()), None);
+                }
+            }
+        }
         let conn = self.connect(&s).await?;
         let acp_id = s.acp_session_id.lock().clone().unwrap_or_default();
+        if s.agent.id == "opencode" {
+            crate::opencode::validate_control(&s.config.lock(), config_id, &value)?;
+        }
         let mut params = json!({"sessionId": acp_id, "configId": config_id, "value": value});
         if value.is_boolean() {
             params["type"] = json!("boolean");
         }
         let r = conn.request("session/set_config_option", params).await?;
+        if s.agent.id == "opencode" && config_id == "model" { s.initial.lock().take(); }
         if let Some(opts) = r.get("configOptions").filter(|v| v.is_array()) {
-            self.emitter.emit(Event::SessionConfig {
-                session_id: s.id.clone(),
-                config_options: opts.clone(),
-            });
+            self.set_config_options(&s, opts.clone());
         }
         Ok(())
     }
 
     /// Workspace of every chat in the middle of a turn, one entry per chat.
     pub fn running_workspaces(&self) -> Vec<String> {
-        self.sessions
-            .lock()
-            .values()
-            .filter(|s| s.running.load(Ordering::SeqCst))
-            .map(|s| s.workspace_id.clone())
-            .collect()
+        self.sessions.lock().values().filter(|s| s.running.load(Ordering::SeqCst)).map(|s| s.workspace_id.clone()).collect()
     }
 
     pub fn is_running(&self, session_id: &str) -> bool {
-        self.sessions
-            .lock()
-            .get(session_id)
-            .is_some_and(|s| s.running.load(Ordering::SeqCst))
+        self.sessions.lock().get(session_id).is_some_and(|s| s.running.load(Ordering::SeqCst))
     }
 
     pub fn close(&self, session_id: &str) {
+        #[cfg(unix)]
+        if let Some(core) = self.core.lock().as_ref().and_then(|core| core.upgrade()) {
+            if let Some(bridge) = core.delegation.bridge.lock().as_ref() {
+                bridge.revoke(session_id);
+            }
+        }
         if let Some(s) = self.sessions.lock().remove(session_id) {
-            if let Ok(guard) = s.conn.try_lock() {
-                if let Some(conn) = guard.as_ref() {
-                    conn.kill();
-                }
+            s.closed.store(true, Ordering::SeqCst);
+            if let Some(conn) = s.transport.lock().as_ref() {
+                conn.kill();
             }
         }
     }
@@ -971,10 +1135,7 @@ fn prompt_blocks(text: &str, cwd: &std::path::Path) -> Value {
             continue;
         }
         let uri = format!("file://{}", abs.display());
-        let text = std::fs::metadata(&abs)
-            .ok()
-            .filter(|m| m.len() <= 200_000)
-            .and_then(|_| std::fs::read_to_string(&abs).ok());
+        let text = std::fs::metadata(&abs).ok().filter(|m| m.len() <= 200_000).and_then(|_| std::fs::read_to_string(&abs).ok());
         blocks.push(match text {
             Some(text) => json!({"type": "resource", "resource": {"uri": uri, "text": text, "mimeType": "text/plain"}}),
             None => json!({"type": "resource_link", "uri": uri, "name": path}),
@@ -1022,16 +1183,29 @@ fn option<'a>(config: &'a Value, id: &str) -> Option<&'a Value> {
 
 fn has_value(opt: &Value, value: &str) -> bool {
     let flat = |o: &Value| o["value"] == value;
-    opt["options"].as_array().is_some_and(|opts| {
-        opts.iter().any(|o| flat(o) || o["options"].as_array().is_some_and(|g| g.iter().any(flat)))
-    })
+    opt["options"]
+        .as_array()
+        .is_some_and(|opts| opts.iter().any(|o| flat(o) || o["options"].as_array().is_some_and(|g| g.iter().any(flat))))
+}
+
+fn reviewer_modes(config: &Value) -> Option<Vec<(String, String)>> {
+    let mode = reviewer_mode(config)?;
+    let mut modes = Vec::new();
+    if option(config, "collaboration_mode").is_some_and(|o| has_value(o, "plan")) {
+        modes.push(("collaboration_mode".into(), "plan".into()));
+    }
+    modes.push(mode);
+    Some(modes)
+}
+
+fn reviewer_mode(config: &Value) -> Option<(String, String)> {
+    let mode = option(config, "mode")?;
+    let value = ["read-only", "plan"].into_iter().find(|value| has_value(mode, value))?;
+    Some(("mode".into(), value.into()))
 }
 
 fn is_plan(config: &Value) -> bool {
-    ["mode", "collaboration_mode"]
-        .iter()
-        .filter_map(|id| option(config, id))
-        .any(|o| o["currentValue"] == "plan")
+    ["mode", "collaboration_mode"].iter().filter_map(|id| option(config, id)).any(|o| o["currentValue"] == "plan")
 }
 
 /// Config changes that put the agent into plan or auto-accept mode.
@@ -1086,10 +1260,10 @@ mod tests {
             select("mode", "agent", &["read-only", "workspace-write", "agent", "agent-full-access"]),
             select("collaboration_mode", "default", &["default", "plan"]),
         ]);
-        assert_eq!(mode_changes(&config, false), vec![("mode".into(), "agent-full-access".into())]);
+        assert_eq!(crate::codex::mode_changes(&config, false).unwrap(), vec![("mode".into(), "agent-full-access".into())]);
         assert_eq!(
-            mode_changes(&config, true),
-            vec![("collaboration_mode".into(), "plan".into()), ("mode".into(), "agent-full-access".into())]
+            crate::codex::mode_changes(&config, true).unwrap(),
+            vec![("mode".into(), "read-only".into()), ("collaboration_mode".into(), "plan".into())]
         );
         assert!(!is_plan(&config));
     }

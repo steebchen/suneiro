@@ -31,10 +31,14 @@ async function choose(props: Props, entry: LoadoutEntry) {
     if (e && entry.effort && e.currentValue !== entry.effort) await actions.setConfig(sessionId, e.id, entry.effort);
     return;
   }
-  const empty = !useStore.getState().views[sessionId]?.transcript.items.length;
-  await actions.createSession(workspaceId, entry.agent, entry.model, entry.effort);
-  // An untouched chat is simply replaced rather than left behind.
-  if (empty) await actions.closeSession(workspaceId, sessionId);
+  const s = useStore.getState();
+  const session = s.sessions[workspaceId]?.find((x) => x.id === sessionId);
+  const view = s.views[sessionId];
+  const hasChildren = Object.values(s.sessions).some((list) => list.some((x) => x.parentSessionId === sessionId));
+  const empty = !!view?.loaded && !view.transcript.items.length && !hasChildren;
+  const created = await actions.createSession(workspaceId, entry.agent, entry.model, entry.effort, session?.parentSessionId);
+  // Keep parents with children even when their own transcript is empty.
+  if (created && empty) await actions.closeSession(workspaceId, sessionId);
 }
 
 export function cycleEffort(sessionId: string, config: ConfigOption[]) {

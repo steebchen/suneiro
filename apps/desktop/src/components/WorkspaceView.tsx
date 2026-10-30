@@ -1,13 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import clsx from "clsx";
-import { Archive, ExternalLink, GitBranch, GitPullRequest, Loader2, PanelRight, Plus, X } from "lucide-react";
+import { Archive, ExternalLink, GitBranch, Loader2, PanelRight } from "lucide-react";
 import { useResizable } from "../lib/resize";
 import { ResizeHandle } from "./ResizeHandle";
 import { actions, toast, useStore } from "../lib/store";
-import { AgentIcon, findModel, modelName } from "../lib/models";
 import { PR_TAB, PrView } from "./PrView";
-import { prAppearance } from "../lib/pr";
-import { api, type Session } from "../lib/api";
+import { api } from "../lib/api";
 import { Chat } from "./Chat";
 import { ChangesPanel } from "./ChangesPanel";
 import { TerminalPanel } from "./TerminalPanel";
@@ -15,7 +13,12 @@ import { PrActions } from "./PrActions";
 import { SyncBadge } from "./SyncBadge";
 import { Menu } from "./Menu";
 
+
+import { TabHierarchy } from "./TabHierarchy";
+import { SavedReplyLimits } from "./SavedReplyLimits";
+
 type Tab = "changes" | "terminal" | "setup";
+
 
 export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
   const ws = useStore((s) => s.workspaces.find((w) => w.id === workspaceId));
@@ -89,7 +92,8 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
 
       <div className="flex min-h-0 flex-1">
         <section className="flex min-w-0 flex-1 flex-col">
-          <SessionTabs workspaceId={ws.id} activeId={sessionId} />
+          <TabHierarchy workspaceId={ws.id} activeId={sessionId} />
+          {sessionId !== PR_TAB && <SavedReplyLimits repoId={ws.repoId} />}
           {sessionId === PR_TAB ? (
             <PrView workspaceId={ws.id} />
           ) : sessionId ? (
@@ -126,7 +130,7 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
             ) : (
               <>
                 <div className={clsx("min-h-0 flex-1", tab !== "changes" && "hidden")}>
-                  <ChangesPanel workspaceId={ws.id} sessionId={sessionId} />
+                  <ChangesPanel key={ws.id} workspaceId={ws.id} sessionId={chatId} />
                 </div>
                 {/* Terminals stay mounted so switching tabs never loses scrollback. */}
                 <div className={clsx("min-h-0 flex-1", tab !== "terminal" && "hidden")}>
@@ -138,98 +142,6 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
           </section>
         )}
       </div>
-    </div>
-  );
-}
-
-function SessionTabs({ workspaceId, activeId }: { workspaceId: string; activeId?: string }) {
-  const sessions = useStore((s) => s.sessions[workspaceId]) ?? [];
-  const agents = useStore((s) => s.agents);
-  const pr = useStore((s) => s.prs[workspaceId]);
-  return (
-    <div className="flex h-9 shrink-0 items-center gap-1 overflow-x-auto overflow-y-hidden border-b border-border px-2">
-      {pr && (
-        <button
-          onClick={() => actions.selectSession(workspaceId, PR_TAB)}
-          className={clsx(
-            "flex shrink-0 items-center gap-1.5 rounded px-2 py-1 text-xs",
-            activeId === PR_TAB ? "bg-hover font-medium text-fg" : "text-muted hover:text-fg",
-          )}
-        >
-          <GitPullRequest size={12} className={prAppearance(pr).color} /> PR #{pr.number}
-        </button>
-      )}
-      {sessions.map((x) => (
-        <SessionTab
-          key={x.id}
-          session={x}
-          agentName={agents.find((a) => a.id === x.agentId)?.name ?? x.agentId}
-          active={x.id === activeId}
-          closable={sessions.length > 1}
-        />
-      ))}
-      <button
-        title="New chat (⌘T)"
-        onClick={() => void actions.newChat(workspaceId)}
-        className="shrink-0 rounded px-1.5 py-1 text-xs text-muted hover:bg-hover hover:text-fg"
-      >
-        <Plus size={13} />
-      </button>
-    </div>
-  );
-}
-
-function SessionTab({
-  session,
-  agentName,
-  active,
-  closable,
-}: {
-  session: Session;
-  agentName: string;
-  active: boolean;
-  closable: boolean;
-}) {
-  // Only non-idle states get a dot; idle chats stay calm.
-  const dot = useStore((s) => {
-    const v = s.views[session.id];
-    if (v?.permissions.length || v?.questions.length) return "bg-warn";
-    if (v?.state === "running") return "pulse bg-accent";
-    if (v?.state === "error") return "bg-del-fg";
-    return v?.unread ? "bg-add-fg" : null;
-  });
-  const model = useStore((s) => {
-    const value = session.model;
-    return value ? modelName(session.agentId, findModel(s.catalogs, session.agentId, value), value) : "";
-  });
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (active) ref.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [active]);
-  return (
-    <div
-      ref={ref}
-      onClick={() => actions.selectSession(session.workspaceId, session.id)}
-      title={[agentName, model].filter(Boolean).join(" · ")}
-      className={clsx(
-        "group flex max-w-56 shrink-0 items-center gap-1.5 rounded px-2 py-1 text-xs",
-        active ? "bg-hover text-fg" : "text-muted hover:text-fg",
-      )}
-    >
-      <AgentIcon agent={session.agentId} size={12} />
-      <span className={clsx("truncate", active && "font-medium", !session.title && "text-muted")}>{session.title || "New chat"}</span>
-      {dot && <span className={clsx("h-1.5 w-1.5 shrink-0 rounded-full", dot)} />}
-      {closable && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            void actions.closeSession(session.workspaceId, session.id);
-          }}
-          className="invisible shrink-0 rounded p-0.5 hover:bg-bg group-hover:visible"
-        >
-          <X size={11} />
-        </button>
-      )}
     </div>
   );
 }

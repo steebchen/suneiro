@@ -1,7 +1,10 @@
+
+import { mockSupervision } from "./supervision";
+
+
 // Dev-only fake backend so the UI can run in a plain browser (`pnpm dev`,
 // then open http://localhost:1420). Never bundled into the Tauri build.
 /* eslint-disable @typescript-eslint/no-explicit-any */
-
 type Channel = { id: number };
 const callbacks = new Map<number, (data: any) => void>();
 const channelIndex = new Map<number, number>();
@@ -10,11 +13,11 @@ let nextCb = 1;
 function send(ch: Channel, message: any) {
   const index = channelIndex.get(ch.id) ?? 0;
   channelIndex.set(ch.id, index + 1);
-  callbacks.get(ch.id)?.({ index, message });
+  callbacks.get(ch.id)?.({ index, message: structuredClone(message) });
 }
 
 let events: Channel | null = null;
-const emit = (...batch: any[]) => events && send(events, batch);
+const emit = (...batch: any[]) => events && send(events, [...batch, ...supervision.observe(batch)]);
 // `?update` in the URL pretends a new version is available; `?update=launch`
 // that it's installing on its own at launch.
 const updateParam = new URLSearchParams(location.search).get("update");
@@ -38,8 +41,19 @@ const archived: any[] = [
   { id: "w9", repoId: "r1", name: "oslo", branch: "suneiro/oslo", baseBranch: "main", path: "/tmp/oslo", status: "archived", createdAt: Date.now() - 9 * 86400e3, title: "Migrate to Postgres 17", archivedAt: Date.now() - 2 * 86400e3 },
 ];
 const sessions: Record<string, any[]> = {
-  w1: [{ id: "s1", workspaceId: "w1", agentId: "claude", acpSessionId: "a1", title: "Add rate limiting to the API", createdAt: 1 }],
-  w2: [{ id: "s2", workspaceId: "w2", agentId: "codex", acpSessionId: "a2", title: "Fix flaky checkout test", createdAt: 1 }],
+  w1: [
+    { id: "s1", workspaceId: "w1", agentId: "claude", acpSessionId: "a1", parentSessionId: null, title: "Add rate limiting to the API", createdAt: 1 },
+    ...(new URLSearchParams(location.search).has("hierarchy") ? [
+      { id: "s3", workspaceId: "w1", agentId: "codex", acpSessionId: null, parentSessionId: "s1", title: "Review limiter edge cases", createdAt: 2 },
+      { id: "s4", workspaceId: "w1", agentId: "claude", acpSessionId: null, parentSessionId: "s3", title: "Verify burst recovery", createdAt: 3 },
+    ] : []),
+  ],
+  w2: [
+    { id: "s2", workspaceId: "w2", agentId: "codex", acpSessionId: "a2", parentSessionId: null, title: "Fix flaky checkout test", createdAt: 1 },
+    ...(new URLSearchParams(location.search).has("hierarchy") ? [
+      { id: "s5", workspaceId: "w2", agentId: "codex", acpSessionId: null, parentSessionId: "s1", title: "Isolated integration tests", createdAt: 4 },
+    ] : []),
+  ],
 };
 const efforts = ["low", "medium", "high", "xhigh", "max"].map((v) => ({ value: v, name: v === "xhigh" ? "Extra high" : v[0].toUpperCase() + v.slice(1) }));
 const catalogs: Record<string, any> = {
@@ -64,6 +78,7 @@ let settings = {
   editor: "Visual Studio Code",
   theme: "system",
   renameBranches: true,
+  maxTabDepth: 4,
 };
 const config = [
   { id: "mode", name: "Mode", category: "mode", type: "select", currentValue: "bypassPermissions", options: [{ value: "default", name: "Manual" }, { value: "plan", name: "Plan" }, { value: "bypassPermissions", name: "Bypass permissions" }] },
@@ -129,6 +144,8 @@ async function streamReply(sessionId: string, text: string, images?: string[]) {
 let pricing: Record<string, any> = {};
 const attachments = new Map<string, string>();
 const mergeState: Record<string, any> = {};
+const supervision = mockSupervision(sessions, workspaces, usageRows, emit);
+
 let repoSettings: any = { scripts: { run: "pnpm dev --port $SUNEIRO_PORT" }, copy: [".env"] };
 function usageRows() {
   const rows: any[] = [];
@@ -153,9 +170,16 @@ function usageRows() {
 }
 
 const handlers: Record<string, (a: any) => any> = {
+  ...supervision.handlers,
+  delegation_tasks: () => [],
+  delegation_messages: () => [],
+  delegate_task: () => { throw new Error("Task launch requires the desktop backend; browser preview cannot run agents."); },
+  delegation_send: () => { throw new Error("Task messaging requires the desktop backend."); },
+  delegation_cancel: () => { throw new Error("Task cancellation requires the desktop backend."); },
+  delegation_finish: () => { throw new Error("Task reports require the desktop backend."); },
   subscribe: (a) => {
     events = a.channel;
-    setTimeout(() => emit({ type: "sessionConfig", sessionId: "s1", configOptions: config }, { type: "sessionUpdate", sessionId: "s1", update: commands }, { type: "sessionState", sessionId: "s1", state: "idle", error: null }), 50);
+    setTimeout(() => emit({ type: "sessionCapabilities", sessionId: "s1", capabilities: { steering: true, images: true, resume: true, load: false } }, { type: "sessionConfig", sessionId: "s1", configOptions: config }, { type: "sessionUpdate", sessionId: "s1", update: commands }, { type: "sessionState", sessionId: "s1", state: "idle", error: null }), 50);
   },
   list_agents: () => [
     { id: "claude", name: "Claude Code", command: "", args: [] },
@@ -182,8 +206,8 @@ const handlers: Record<string, (a: any) => any> = {
     }, 1500);
     return { ...ws };
   },
-  list_sessions: (a) => sessions[a.workspaceId] ?? [],
-  session_events: (a) => sessionHistory(a.sessionId),
+  list_sessions: (a) => structuredClone(sessions[a.workspaceId] ?? []),
+  session_events: (a) => structuredClone(sessionHistory(a.sessionId)),
   get_settings: () => settings,
   save_settings: (a) => void (settings = a.settings),
   detect_agents: async () => {
@@ -197,12 +221,13 @@ const handlers: Record<string, (a: any) => any> = {
   answer_question: (a) => {
     emit(
       { type: "questionResolved", sessionId: a.sessionId, requestId: a.requestId },
-      { type: "sessionUpdate", sessionId: a.sessionId, update: { sessionUpdate: "agent_message_chunk", messageId: `ans${Date.now()}`, content: { type: "text", text: `Got it: \`${JSON.stringify(a.response)}\`` } } },
+      { type: "sessionUpdate", sessionId: a.sessionId, update: { sessionUpdate: "agent_message_chunk", messageId: `ans${Date.now()}`, content: { type: "text", text: "Thanks. I'll use your answers to continue." } } },
       { type: "turnEnd", sessionId: a.sessionId, stopReason: "end_turn", ts: 0 },
       { type: "sessionState", sessionId: a.sessionId, state: "idle", error: null },
     );
   },
   send_prompt: (a) => {
+    supervision.admit(a.sessionId);
     if (a.text.startsWith("ask")) {
       const codex = a.text.includes("codex");
       emit({ type: "userMessage", sessionId: a.sessionId, text: a.text, ts: Date.now() }, { type: "sessionState", sessionId: a.sessionId, state: "running", error: null });
@@ -268,11 +293,31 @@ const handlers: Record<string, (a: any) => any> = {
     target.title = ws.title = a.pr ? `PR #${a.pr}` : "";
     return ws;
   },
-  create_session: (a) => {
-    const x = { id: `s${Date.now()}`, workspaceId: a.workspaceId, agentId: a.agentId, acpSessionId: null, title: "", createdAt: Date.now() };
-    sessions[a.workspaceId] = [...(sessions[a.workspaceId] ?? []), x];
-    setTimeout(() => emit({ type: "sessionConfig", sessionId: x.id, configOptions: config }, { type: "sessionUpdate", sessionId: x.id, update: commands }, { type: "sessionState", sessionId: x.id, state: "idle", error: null }), 2200);
-    return x;
+  create_session: (a) => mockCreateSession(a),
+  create_child_session: (a) => mockCreateSession(a, a.parentSessionId),
+  create_sibling_session: (a) => {
+    const sibling = Object.values(sessions).flat().find((x) => x.id === a.siblingSessionId);
+    if (!sibling) throw new Error("sibling chat does not exist");
+    if (workspaces.find((w) => w.id === sibling.workspaceId)?.repoId !== workspaces.find((w) => w.id === a.workspaceId)?.repoId) throw new Error("sibling chats must belong to the same repository");
+    return mockCreateSession(a, sibling.parentSessionId);
+  },
+  detach_session: (a) => {
+    const session = Object.values(sessions).flat().find((x) => x.id === a.sessionId);
+    if (!session) throw new Error("chat does not exist");
+    session.parentSessionId = null;
+    emit({ type: "sessionHierarchyChanged", sessionId: session.id, parentSessionId: null });
+    return { ...session };
+  },
+  delete_session: (a) => {
+    const session = Object.values(sessions).flat().find((x) => x.id === a.sessionId);
+    if (!session) throw new Error("chat does not exist");
+    if (sessions[session.workspaceId].length <= 1) throw new Error("a workspace must keep at least one chat");
+    for (const child of Object.values(sessions).flat().filter((x) => x.parentSessionId === a.sessionId)) {
+      child.parentSessionId = null;
+      emit({ type: "sessionHierarchyChanged", sessionId: child.id, parentSessionId: null });
+    }
+    sessions[session.workspaceId] = sessions[session.workspaceId].filter((x) => x.id !== a.sessionId);
+    emit({ type: "sessionRemoved", sessionId: a.sessionId, workspaceId: session.workspaceId });
   },
   respond_permission: (a) => {
     emit({ type: "permissionResolved", sessionId: a.sessionId, requestId: a.requestId }, { type: "turnEnd", sessionId: a.sessionId, stopReason: "end_turn", ts: Date.now() }, { type: "sessionState", sessionId: a.sessionId, state: "idle", error: null });
@@ -429,3 +474,24 @@ const handlers: Record<string, (a: any) => any> = {
 };
 (window as any).__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
 export {};
+function mockCreateSession(a: any, parentSessionId: string | null = null) {
+  const ws = workspaces.find((w) => w.id === a.workspaceId);
+  if (!ws) throw new Error("workspace does not exist");
+  let next = parentSessionId;
+  let depth = 0;
+  const seen = new Set<string>();
+  while (next) {
+    if (seen.has(next)) throw new Error("tab hierarchy cannot contain a cycle");
+    seen.add(next);
+    const parent = Object.values(sessions).flat().find((x) => x.id === next);
+    if (!parent) throw new Error("parent chat does not exist");
+    if (workspaces.find((w) => w.id === parent.workspaceId)?.repoId !== ws.repoId) throw new Error("parent and child chats must belong to the same repository");
+    if (++depth > settings.maxTabDepth) throw new Error(`maximum tab depth (${settings.maxTabDepth}) exceeded`);
+    next = parent.parentSessionId;
+  }
+  const x = { id: crypto.randomUUID(), workspaceId: a.workspaceId, agentId: a.agentId, acpSessionId: null, title: "", createdAt: Date.now(), parentSessionId, model: a.model ?? null, effort: a.effort ?? null };
+  sessions[a.workspaceId] = [...(sessions[a.workspaceId] ?? []), x];
+  emit({ type: "sessionAdded", session: x });
+  setTimeout(() => emit({ type: "sessionCapabilities", sessionId: x.id, capabilities: { steering: false, images: false, resume: true, load: false } }, { type: "sessionConfig", sessionId: x.id, configOptions: config }, { type: "sessionUpdate", sessionId: x.id, update: commands }, { type: "sessionState", sessionId: x.id, state: "idle", error: null }), 200);
+  return { ...x };
+}

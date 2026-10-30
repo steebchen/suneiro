@@ -6,6 +6,14 @@ pub mod acp;
 pub mod agent;
 pub mod attachments;
 pub mod catalog;
+
+pub mod capabilities;
+pub mod opencode;
+mod codex;
+
+pub mod delegation;
+pub mod delegation_bridge;
+
 pub mod env;
 pub mod events;
 pub mod forge;
@@ -13,11 +21,14 @@ pub mod git;
 pub mod pty;
 pub mod recent;
 pub mod setup;
+pub mod storage;
+pub mod store;
+pub mod supervision;
 pub mod title;
 pub mod usage;
-pub mod store;
-pub mod storage;
 pub mod workspace;
+pub mod verification;
+pub mod review;
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -32,8 +43,8 @@ pub use events::{Event, Sink};
 pub use store::{Repo, Session, Store, Workspace};
 
 use crate::env::{tokio_command, user_shell};
-use crate::store::now;
 use crate::setup::Settings;
+use crate::store::now;
 use crate::workspace::{load_file_config, merge_config, pick_name, script_env, RepoConfig};
 
 /// Stash message used to keep a workspace's uncommitted work while archived.
@@ -65,7 +76,10 @@ struct WorkspaceJob {
 impl WorkspaceJob {
     fn start(jobs: &Arc<parking_lot::Mutex<std::collections::HashMap<String, usize>>>, workspace_id: &str) -> Self {
         *jobs.lock().entry(workspace_id.to_string()).or_default() += 1;
-        Self { jobs: jobs.clone(), workspace_id: workspace_id.to_string() }
+        Self {
+            jobs: jobs.clone(),
+            workspace_id: workspace_id.to_string(),
+        }
     }
 }
 
@@ -90,12 +104,19 @@ pub struct Emitter {
 
 impl Emitter {
     pub fn emit(&self, event: Event) {
+        let changes = self.store.observe_supervision(&event).unwrap_or_else(|e| {
+            log::error!("supervision persistence: {e:#}");
+            Vec::new()
+        });
         if let Some(session_id) = event.persist_key() {
             if let Ok(v) = serde_json::to_value(&event) {
                 self.store.append_event(session_id, v);
             }
         }
         (self.sink)(event);
+        for change in changes {
+            (self.sink)(change);
+        }
     }
 }
 
@@ -112,18 +133,25 @@ pub struct Core {
     fetched: parking_lot::Mutex<std::collections::HashMap<String, std::time::Instant>>,
     /// Workspaces with a setup/archive in progress (count per workspace).
     jobs: Arc<parking_lot::Mutex<std::collections::HashMap<String, usize>>>,
+    pub delegation: Arc<delegation::Delegation>,
+    verification: verification::Runner,
 }
 
 impl Core {
     pub fn new(data_dir: &Path, sink: Sink) -> Result<Arc<Self>> {
         let store = Arc::new(Store::open(&storage::database_path(data_dir))?);
-        let emitter = Emitter { store: store.clone(), sink };
+
+        store.recover_inbox()?;
+        let emitter = Emitter {
+            store: store.clone(),
+            sink,
+        };
+        let delegation = Arc::new(delegation::Delegation::open(&storage::database_path(data_dir))?);
         let agents = Arc::new(Agents::new(store.clone(), emitter.clone()));
-        // Warm the login-shell env capture off the UI's critical path.
         std::thread::spawn(|| {
             env::login_env();
         });
-        Ok(Arc::new(Self {
+        let core = Arc::new(Self {
             store,
             data_dir: data_dir.to_path_buf(),
             agents,
@@ -133,7 +161,12 @@ impl Core {
             pr_refresh: tokio::sync::Notify::new(),
             fetched: Default::default(),
             jobs: Default::default(),
-        }))
+            delegation,
+            verification: Default::default(),
+        });
+        core.agents.attach_core(Arc::downgrade(&core));
+        core.reconcile_delegation_reports()?;
+        Ok(core)
     }
 
     /// What a restart would interrupt right now.
@@ -142,10 +175,14 @@ impl Core {
         let running = self.agents.running_workspaces();
         let agents = running.len();
         workspaces.extend(running);
-        Activity { agents, workspaces: workspaces.len() }
+        Activity {
+            agents,
+            workspaces: workspaces.len(),
+        }
     }
 
     pub fn shutdown(&self) {
+        self.verification.cancel_all();
         self.agents.shutdown();
         self.terminals.kill_all();
     }
@@ -162,6 +199,10 @@ impl Core {
     }
 
     pub fn save_settings(&self, settings: &Settings) -> Result<()> {
+        anyhow::ensure!(
+            (1..=8).contains(&settings.max_tab_depth),
+            "maximum tab depth must be between 1 and 8"
+        );
         self.store.set_setting("settings", &serde_json::to_string(settings)?)
     }
 
@@ -176,7 +217,10 @@ impl Core {
         }
         let repo = Repo {
             id: uuid::Uuid::new_v4().to_string(),
-            name: Path::new(&root).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+            name: Path::new(&root)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default(),
             default_branch: git::default_branch(Path::new(&root)).await,
             path: root,
         };
@@ -205,9 +249,17 @@ impl Core {
     /// Clone `owner/repo` (or a URL) with `gh` into ~/projects (or ~) and add it.
     pub async fn clone_repo(&self, spec: &str) -> Result<Repo> {
         let spec = spec.trim().trim_end_matches(".git");
-        let name = spec.rsplit(['/', ':']).next().filter(|n| !n.is_empty()).ok_or_else(|| anyhow!("enter owner/repo or a URL"))?;
+        let name = spec
+            .rsplit(['/', ':'])
+            .next()
+            .filter(|n| !n.is_empty())
+            .ok_or_else(|| anyhow!("enter owner/repo or a URL"))?;
         let home = dirs::home_dir().ok_or_else(|| anyhow!("no home directory"))?;
-        let parent = if home.join("projects").is_dir() { home.join("projects") } else { home };
+        let parent = if home.join("projects").is_dir() {
+            home.join("projects")
+        } else {
+            home
+        };
         let dest = parent.join(name);
         if !dest.exists() {
             let out = tokio_command("gh")
@@ -230,7 +282,12 @@ impl Core {
 
     /// Start a workspace on an existing branch (local or only on origin) or
     /// on a pull request's branch.
-    pub async fn create_workspace_from(self: &Arc<Self>, repo_id: &str, branch: Option<&str>, pr: Option<u64>) -> Result<Workspace> {
+    pub async fn create_workspace_from(
+        self: &Arc<Self>,
+        repo_id: &str,
+        branch: Option<&str>,
+        pr: Option<u64>,
+    ) -> Result<Workspace> {
         let repo = self.store.repo(repo_id)?;
         let repo_path = PathBuf::from(&repo.path);
         let (branch, base, title) = match (branch, pr) {
@@ -242,21 +299,35 @@ impl Core {
                     // A fork's branch: fetch the PR head into a local branch.
                     let local = format!("pr-{n}");
                     // Fast-forwards an existing pr-<n> to the PR's latest head.
-                    let fetched = git::git(&repo_path, &["fetch", "-q", "origin", &format!("pull/{n}/head:{local}")]).await;
+                    let fetched = git::git(
+                        &repo_path,
+                        &["fetch", "-q", "origin", &format!("pull/{n}/head:{local}")],
+                    )
+                    .await;
                     if !git::branch_exists(&repo_path, &local).await {
                         fetched?;
                     }
                     (local, base, title)
                 } else {
-                    let b = head["headRefName"].as_str().ok_or_else(|| anyhow!("PR #{n} has no branch"))?;
+                    let b = head["headRefName"]
+                        .as_str()
+                        .ok_or_else(|| anyhow!("PR #{n} has no branch"))?;
                     (b.to_string(), base, title)
                 }
             }
             (Some(b), None) => (b.trim().to_string(), repo.default_branch.clone(), String::new()),
             (None, None) => bail!("choose a branch or pull request"),
         };
-        if let Some(open) = self.store.workspaces()?.iter().find(|w| w.repo_id == repo.id && w.branch == branch) {
-            bail!("`{branch}` is already open in workspace {}", if open.title.is_empty() { &open.name } else { &open.title });
+        if let Some(open) = self
+            .store
+            .workspaces()?
+            .iter()
+            .find(|w| w.repo_id == repo.id && w.branch == branch)
+        {
+            bail!(
+                "`{branch}` is already open in workspace {}",
+                if open.title.is_empty() { &open.name } else { &open.title }
+            );
         }
         if let Some(at) = git::checked_out_at(&repo_path, &branch).await {
             bail!("`{branch}` is checked out at {at}; switch that checkout to another branch first");
@@ -266,6 +337,15 @@ impl Core {
 
     /// New workspace on a fresh branch, or on `existing` (branch, base, title).
     async fn new_workspace(self: &Arc<Self>, repo_id: &str, existing: Option<(String, String, String)>) -> Result<Workspace> {
+        self.new_workspace_at(repo_id, existing, None).await
+    }
+    async fn new_workspace_at(
+        self: &Arc<Self>,
+        repo_id: &str,
+        existing: Option<(String, String, String)>,
+        start_ref: Option<String>,
+
+    ) -> Result<Workspace> {
         let repo = self.store.repo(repo_id)?;
         let repo_path = PathBuf::from(&repo.path);
         let settings = self.settings();
@@ -274,9 +354,14 @@ impl Core {
         let taken = self.store.workspace_names(repo_id)?;
         let mut name = pick_name(&taken, now() as u64);
         let mut n = 2;
-        while git::git(&repo_path, &["rev-parse", "--verify", "--quiet", &format!("{prefix}{name}")])
-            .await
-            .is_ok()
+
+        while git::git(
+            &repo_path,
+            &["rev-parse", "--verify", "--quiet", &format!("{prefix}{name}")],
+        )
+        .await
+        .is_ok()
+
             || root.join(&name).exists()
         {
             name = format!("{}-{n}", pick_name(&taken, now() as u64));
@@ -303,29 +388,38 @@ impl Core {
 
         // Fetching and checking out can take a while on big repos; return right
         // away and let the UI show progress via WorkspaceStatus events.
-        self.spawn_worktree_setup(ws.clone(), repo, new_branch);
+        self.spawn_worktree_setup_at(ws.clone(), repo, new_branch, start_ref);
         Ok(ws)
     }
 
     /// Create (or re-create) the worktree in the background, then run setup.
     fn spawn_worktree_setup(self: &Arc<Self>, ws: Workspace, repo: Repo, new_branch: bool) {
+        self.spawn_worktree_setup_at(ws, repo, new_branch, None)
+    }
+    fn spawn_worktree_setup_at(self: &Arc<Self>, ws: Workspace, repo: Repo, new_branch: bool, start_ref: Option<String>) {
         let this = self.clone();
         let job = WorkspaceJob::start(&self.jobs, &ws.id);
         tokio::spawn(async move {
             let _job = job;
             let repo_path = PathBuf::from(&repo.path);
-            let status = match this.prepare_worktree(&ws, &repo_path, new_branch).await {
+            let status = match this.prepare_worktree_at(&ws, &repo_path, new_branch, start_ref.as_deref()).await {
                 Ok(Some(setup)) => {
                     this.set_status(&ws.id, "setting_up");
                     let ok = this.run_script(&ws, &repo.path, &setup).await;
-                    if ok { "ready" } else { "setup_failed" }
+                    if ok {
+                        "ready"
+                    } else {
+                        "setup_failed"
+                    }
                 }
                 Ok(None) => "ready",
                 Err(e) => {
+
                     this.emitter.emit(Event::ScriptOutput {
                         workspace_id: ws.id.clone(),
                         data: format!("Failed to create worktree: {e:#}\n"),
                     });
+
                     "failed"
                 }
             };
@@ -342,7 +436,10 @@ impl Core {
         }
         let repo = self.store.repo(&ws.repo_id)?;
         if !git::branch_exists(Path::new(&repo.path), &ws.branch).await {
-            bail!("branch `{}` no longer exists, so this workspace can't be restored", ws.branch);
+            bail!(
+                "branch `{}` no longer exists, so this workspace can't be restored",
+                ws.branch
+            );
         }
         if Path::new(&ws.path).exists() {
             bail!("{} already exists; move it away and try again", ws.path);
@@ -357,15 +454,28 @@ impl Core {
 
     fn set_status(&self, workspace_id: &str, status: &str) {
         let _ = self.store.set_workspace_status(workspace_id, status);
-        self.emitter.emit(Event::WorkspaceStatus { workspace_id: workspace_id.into(), status: status.into() });
+        self.emitter.emit(Event::WorkspaceStatus {
+            workspace_id: workspace_id.into(),
+            status: status.into(),
+        });
     }
 
     /// Create the worktree and copy configured files. Returns the setup script, if any.
-    async fn prepare_worktree(&self, ws: &Workspace, repo_path: &Path, new_branch: bool) -> Result<Option<String>> {
+    async fn prepare_worktree_at(
+        &self,
+        ws: &Workspace,
+        repo_path: &Path,
+        new_branch: bool,
+        start_ref: Option<&str>,
+    ) -> Result<Option<String>> {
         let path = PathBuf::from(&ws.path);
         tokio::fs::create_dir_all(path.parent().unwrap()).await?;
         if new_branch {
+            if let Some(start) = start_ref {
+                git::git(repo_path, &["worktree", "add", "--no-track", "-b", &ws.branch, &path.to_string_lossy(), start]).await?;
+            } else {
             git::create_worktree(repo_path, &path, &ws.branch, &ws.base_branch).await?;
+            }
         } else {
             git::ensure_local_branch(repo_path, &ws.branch).await?;
             git::add_worktree(repo_path, &path, &ws.branch).await?;
@@ -373,7 +483,9 @@ impl Core {
                 if let Err(e) = git::stash_pop(&path, &stash).await {
                     self.emitter.emit(Event::ScriptOutput {
                         workspace_id: ws.id.clone(),
-                        data: format!("Couldn't re-apply the changes saved when archiving ({e:#}). They're kept in `git stash` as {stash}.\n"),
+                        data: format!(
+                            "Couldn't re-apply the changes saved when archiving ({e:#}). They're kept in `git stash` as {stash}.\n"
+                        ),
                     });
                 }
             }
@@ -394,7 +506,10 @@ impl Core {
     /// Run a repo script inside the worktree, streaming output as `ScriptOutput`.
     async fn run_script(&self, ws: &Workspace, repo_path: &str, script: &str) -> bool {
         let emit = |data: String| {
-            self.emitter.emit(Event::ScriptOutput { workspace_id: ws.id.clone(), data })
+            self.emitter.emit(Event::ScriptOutput {
+                workspace_id: ws.id.clone(),
+                data,
+            })
         };
         emit(format!("$ {script}\n"));
         let child = tokio_command(&user_shell())
@@ -428,11 +543,18 @@ impl Core {
             }
         }
         let ok = child.wait().await.map(|s| s.success()).unwrap_or(false);
-        emit(if ok { "\n✓ done\n".into() } else { "\n✗ script failed\n".into() });
+        emit(if ok {
+            "\n✓ done\n".into()
+        } else {
+            "\n✗ script failed\n".into()
+        });
         ok
     }
 
     pub async fn archive_workspace(&self, workspace_id: &str) -> Result<()> {
+        let lock = self.agents.workspace_lock(workspace_id);
+        let _guard = lock.try_lock().map_err(|_| anyhow!("workspace operation already running"))?;
+        self.ensure_verification_idle(workspace_id)?;
         let ws = self.store.workspace(workspace_id)?;
         let repo = self.store.repo(&ws.repo_id)?;
         let _job = WorkspaceJob::start(&self.jobs, &ws.id);
@@ -459,7 +581,10 @@ impl Core {
     pub fn rename_workspace(&self, workspace_id: &str, title: &str) -> Result<()> {
         let title = title.trim();
         self.store.set_workspace_title(workspace_id, title)?;
-        self.emitter.emit(Event::WorkspaceTitle { workspace_id: workspace_id.into(), title: title.into() });
+        self.emitter.emit(Event::WorkspaceTitle {
+            workspace_id: workspace_id.into(),
+            title: title.into(),
+        });
         Ok(())
     }
 
@@ -484,7 +609,8 @@ impl Core {
     }
 
     pub fn save_repo_settings(&self, repo_id: &str, config: &RepoConfig) -> Result<()> {
-        self.store.set_setting(&format!("repo_config:{repo_id}"), &serde_json::to_string(config)?)
+        self.store
+            .set_setting(&format!("repo_config:{repo_id}"), &serde_json::to_string(config)?)
     }
 
     /// The config file committed in the repository's main checkout, if any.
@@ -504,7 +630,48 @@ impl Core {
         model: Option<String>,
         effort: Option<String>,
     ) -> Result<Session> {
+        self.create_linked_session(workspace_id, agent_id, model, effort, None)
+    }
+
+    pub fn create_child_session(
+        &self,
+        parent_session_id: &str,
+        workspace_id: &str,
+        agent_id: &str,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<Session> {
+        self.create_linked_session(workspace_id, agent_id, model, effort, Some(parent_session_id.into()))
+    }
+
+    pub fn create_sibling_session(
+        &self,
+        sibling_session_id: &str,
+        workspace_id: &str,
+        agent_id: &str,
+        model: Option<String>,
+        effort: Option<String>,
+    ) -> Result<Session> {
+        let sibling = self.store.session(sibling_session_id)?;
+        let source = self.store.workspace(&sibling.workspace_id)?;
+        let target = self.store.workspace(workspace_id)?;
+        anyhow::ensure!(
+            source.repo_id == target.repo_id,
+            "sibling chats must belong to the same repository"
+        );
+        self.create_linked_session(workspace_id, agent_id, model, effort, sibling.parent_session_id)
+    }
+
+    fn create_linked_session(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        model: Option<String>,
+        effort: Option<String>,
+        parent_session_id: Option<String>,
+    ) -> Result<Session> {
         self.agents.def(agent_id)?;
+        let settings = self.settings();
         let session = Session {
             id: uuid::Uuid::new_v4().to_string(),
             workspace_id: workspace_id.into(),
@@ -514,19 +681,48 @@ impl Core {
             created_at: now(),
             model: model.clone(),
             effort: effort.clone(),
+            parent_session_id,
         };
-        self.store.add_session(&session)?;
-        self.agents.preset(&session.id, self.settings().plan_by_default, model, effort)?;
+        self.store.add_session_with_depth(&session, settings.max_tab_depth)?;
+        self.emitter.emit(Event::SessionAdded {
+            session: session.clone(),
+        });
+        self.agents
+            .preset(&session.id, settings.plan_by_default, model, effort)?;
         self.agents.warm_up(&session.id);
         Ok(session)
     }
 
+    pub fn detach_session(&self, session_id: &str) -> Result<Session> {
+        self.store.detach_session(session_id)?;
+        self.emitter.emit(Event::SessionHierarchyChanged {
+            session_id: session_id.into(),
+            parent_session_id: None,
+        });
+        self.store.session(session_id)
+    }
+
     pub fn delete_session(&self, session_id: &str) -> Result<()> {
+        let session = self.store.session(session_id)?;
+        let children = self.store.delete_session(session_id)?;
         self.agents.close(session_id);
+        for id in children {
+            self.emitter.emit(Event::SessionHierarchyChanged {
+                session_id: id,
+                parent_session_id: None,
+            });
+        }
+        self.emitter.emit(Event::SessionRemoved {
+            session_id: session_id.into(),
+            workspace_id: session.workspace_id.clone(),
+        });
         // The chat's checkpoints go with it (in the background; it's only cleanup).
         // Refs are shared by the repo, so this works even when the workspace
         // is archived (no worktree).
-        let repo = self.store.session(session_id).and_then(|s| self.store.workspace(&s.workspace_id)).and_then(|w| self.store.repo(&w.repo_id));
+        let repo = self
+            .store
+            .workspace(&session.workspace_id)
+            .and_then(|w| self.store.repo(&w.repo_id));
         if let Ok(repo) = repo {
             let prefix = format!("refs/runner/checkpoints/{session_id}/");
             std::thread::spawn(move || {
@@ -538,7 +734,7 @@ impl Core {
                 }
             });
         }
-        self.store.delete_session(session_id)
+        Ok(())
     }
 
     /// Put the workspace's files back to a checkpoint taken before one of
@@ -548,10 +744,8 @@ impl Core {
         let session = self.store.session(session_id)?;
         let (_, path) = self.ws_path(&session.workspace_id)?;
         let lock = self.agents.workspace_lock(&session.workspace_id);
-        let _guard = lock.lock().await;
-        if self.agents.workspace_busy(&session.workspace_id) {
-            bail!("an agent is working in this workspace; stop it first");
-        }
+        let _guard = lock.try_lock().map_err(|_| anyhow!("workspace operation already running"))?;
+        self.ensure_verification_idle(&session.workspace_id)?;
         git::git(&path, &["cat-file", "-e", &format!("{commit}^{{commit}}")])
             .await
             .map_err(|_| anyhow!("this checkpoint no longer exists"))?;
@@ -568,7 +762,12 @@ impl Core {
             undo: Some(undo.clone()),
             ts: now(),
         });
-        self.emitter.emit(Event::WorkspaceStatus { workspace_id: session.workspace_id, status: "dirty".into() });
+
+        self.emitter.emit(Event::WorkspaceStatus {
+            workspace_id: session.workspace_id,
+            status: "dirty".into(),
+        });
+
         Ok(undo)
     }
 
@@ -597,7 +796,12 @@ impl Core {
     /// Usage since `since` (ms) with costs reported or estimated.
     pub fn usage(&self, since: i64) -> Result<Vec<usage::PricedUsage>> {
         let pricing = usage::load_pricing(&self.store);
-        Ok(self.store.usage_since(since)?.into_iter().map(|u| usage::price(u, &pricing)).collect())
+        Ok(self
+            .store
+            .usage_since(since)?
+            .into_iter()
+            .map(|u| usage::price(u, &pricing))
+            .collect())
     }
 
     pub fn pricing(&self) -> usage::Pricing {
@@ -653,7 +857,9 @@ impl Core {
     }
 
     pub async fn poll_prs(&self) {
-        let Ok(workspaces) = self.store.workspaces() else { return };
+        let Ok(workspaces) = self.store.workspaces() else {
+            return;
+        };
         let Ok(repos) = self.store.repos() else { return };
         for repo in repos {
             let mine: Vec<&Workspace> = workspaces.iter().filter(|w| w.repo_id == repo.id).collect();
@@ -661,7 +867,9 @@ impl Core {
                 continue;
             }
             // Not a GitHub repo, gh missing or signed out: just show nothing.
-            let Ok(prs) = forge::list_prs(Path::new(&repo.path)).await else { continue };
+            let Ok(prs) = forge::list_prs(Path::new(&repo.path)).await else {
+                continue;
+            };
             for ws in mine {
                 let pr = prs
                     .iter()
@@ -671,7 +879,10 @@ impl Core {
                 let changed = self.prs.lock().get(&ws.id) != Some(&pr);
                 if changed {
                     self.prs.lock().insert(ws.id.clone(), pr.clone());
-                    self.emitter.emit(Event::WorkspacePr { workspace_id: ws.id.clone(), pr });
+                    self.emitter.emit(Event::WorkspacePr {
+                        workspace_id: ws.id.clone(),
+                        pr,
+                    });
                 }
             }
         }
@@ -701,11 +912,17 @@ impl Core {
     }
 
     pub async fn revert_file(&self, workspace_id: &str, file: &str) -> Result<()> {
+        let lock = self.agents.workspace_lock(workspace_id);
+        let _guard = lock.try_lock().map_err(|_| anyhow!("workspace operation already running"))?;
+        self.ensure_verification_idle(workspace_id)?;
         let (ws, path) = self.ws_path(workspace_id)?;
         git::revert_file(&path, &ws.base_branch, file).await
     }
 
     pub async fn commit_all(&self, workspace_id: &str, message: &str) -> Result<()> {
+        let lock = self.agents.workspace_lock(workspace_id);
+        let _guard = lock.try_lock().map_err(|_| anyhow!("workspace operation already running"))?;
+        self.ensure_verification_idle(workspace_id)?;
         let (_, path) = self.ws_path(workspace_id)?;
         if !git::has_uncommitted(&path).await? {
             bail!("nothing to commit");
@@ -716,7 +933,11 @@ impl Core {
     /// Fetch the base branch, unless that happened recently (or `force`).
     async fn fetch_base(&self, ws: &Workspace, path: &Path, force: bool) {
         let key = format!("{}\0{}", ws.repo_id, ws.base_branch);
-        let fresh = self.fetched.lock().get(&key).is_some_and(|t| t.elapsed().as_secs() < 60);
+        let fresh = self
+            .fetched
+            .lock()
+            .get(&key)
+            .is_some_and(|t| t.elapsed().as_secs() < 60);
         if fresh && !force {
             return;
         }
@@ -733,20 +954,29 @@ impl Core {
 
     /// Merge the latest base branch in. Returns conflicted files, if any.
     pub async fn merge_base_branch(&self, workspace_id: &str) -> Result<Vec<String>> {
+        let lock = self.agents.workspace_lock(workspace_id);
+        let _guard = lock.try_lock().map_err(|_| anyhow!("workspace operation already running"))?;
+        self.ensure_verification_idle(workspace_id)?;
         let (ws, path) = self.ws_path(workspace_id)?;
-        if self.agents.workspace_busy(workspace_id) {
-            bail!("an agent is working in this workspace; wait for it to finish");
-        }
         self.fetch_base(&ws, &path, true).await;
         let result = git::merge_base_branch(&path, &ws.base_branch).await;
-        self.emitter.emit(Event::WorkspaceStatus { workspace_id: ws.id, status: "dirty".into() });
+        self.emitter.emit(Event::WorkspaceStatus {
+            workspace_id: ws.id,
+            status: "dirty".into(),
+        });
         result
     }
 
     pub async fn abort_merge(&self, workspace_id: &str) -> Result<()> {
+        let lock = self.agents.workspace_lock(workspace_id);
+        let _guard = lock.try_lock().map_err(|_| anyhow!("workspace operation already running"))?;
+        self.ensure_verification_idle(workspace_id)?;
         let (ws, path) = self.ws_path(workspace_id)?;
         git::abort_merge(&path).await?;
-        self.emitter.emit(Event::WorkspaceStatus { workspace_id: ws.id, status: "dirty".into() });
+        self.emitter.emit(Event::WorkspaceStatus {
+            workspace_id: ws.id,
+            status: "dirty".into(),
+        });
         Ok(())
     }
 
@@ -757,6 +987,9 @@ impl Core {
 
     /// Commit pending changes (using the title as message), push, open a PR.
     pub async fn create_pr(&self, workspace_id: &str, title: &str, body: &str) -> Result<String> {
+        let lock = self.agents.workspace_lock(workspace_id);
+        let _guard = lock.try_lock().map_err(|_| anyhow!("workspace operation already running"))?;
+        self.ensure_verification_idle(workspace_id)?;
         let (ws, path) = self.ws_path(workspace_id)?;
         if git::has_uncommitted(&path).await? {
             git::commit_all(&path, title).await?;
@@ -770,6 +1003,9 @@ impl Core {
     /// Commit pending changes with a written message (falling back to the
     /// workspace title), then push.
     pub async fn commit_and_push(&self, workspace_id: &str) -> Result<()> {
+        let lock = self.agents.workspace_lock(workspace_id);
+        let _guard = lock.try_lock().map_err(|_| anyhow!("workspace operation already running"))?;
+        self.ensure_verification_idle(workspace_id)?;
         let (ws, path) = self.ws_path(workspace_id)?;
         if git::has_uncommitted(&path).await? {
             let summary = git::uncommitted_summary(&path).await?;
@@ -789,11 +1025,16 @@ impl Core {
         let (ws, path) = self.ws_path(workspace_id)?;
         let mut summary = git::branch_summary(&path, &ws.base_branch).await?;
         if git::has_uncommitted(&path).await? {
-            summary = format!("{summary}\n\nNot committed yet:\n{}", git::uncommitted_summary(&path).await?);
+            summary = format!(
+                "{summary}\n\nNot committed yet:\n{}",
+                git::uncommitted_summary(&path).await?
+            );
         }
-        title::pr_text(&summary)
-            .await
-            .ok_or_else(|| anyhow!("couldn't write a description (this uses Claude Code; is it installed and signed in?)"))
+
+        title::pr_text(&summary).await.ok_or_else(|| {
+            anyhow!("couldn't write a description (this uses Claude Code; is it installed and signed in?)")
+        })
+
     }
 
     pub async fn push(&self, workspace_id: &str) -> Result<()> {
@@ -831,7 +1072,8 @@ impl Core {
         let (ws, path) = self.ws_path(workspace_id)?;
         let root = self.store.repo(&ws.repo_id).map(|r| r.path).unwrap_or_default();
         let env = script_env(&root, &ws.name, &ws.path, &ws.id);
-        self.terminals.spawn(terminal_id, &path, cols, rows, command, &env, on_output, on_exit)
+        self.terminals
+            .spawn(terminal_id, &path, cols, rows, command, &env, on_output, on_exit)
     }
 
     /// Terminal outside any workspace (used for agent install/login flows).
@@ -845,6 +1087,7 @@ impl Core {
         on_exit: impl FnOnce() + Send + 'static,
     ) -> Result<()> {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        self.terminals.spawn(terminal_id, &home, cols, rows, Some(command), &[], on_output, on_exit)
+        self.terminals
+            .spawn(terminal_id, &home, cols, rows, Some(command), &[], on_output, on_exit)
     }
 }

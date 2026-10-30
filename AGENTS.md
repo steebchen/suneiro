@@ -6,9 +6,10 @@ Guidance for AI coding agents (and humans) working in this repository. `CLAUDE.m
 
 Suneiro is a desktop app that runs coding agents (Claude Code, Codex, OpenCode) in parallel. Each task gets its own git worktree, and the app handles chat, diff review, PRs and terminals. It's similar to conductor.build.
 
-- **Goals:** a fast, efficient UI; macOS first, but keep Linux and Windows possible; open source with paid add-ons later.
+- **Goals:** a fast, efficient, chat-first UI; macOS first, but keep Linux and Windows possible; open source with paid add-ons later. Keep built-in agents, related chats, ordinary model selection, user-filled questions and human diff/PR review. Do not add agent profiles, context-handoff builders, custom reviewers or advanced workflow consoles.
 - **Agents run on the user's own logins** (Claude subscription, ChatGPT, OpenCode auth). Suneiro never stores or proxies credentials; it only runs the official CLIs and their login commands.
 - **One protocol for all agents:** every agent speaks the Agent Client Protocol (ACP) over stdio. Claude and Codex run through adapters (`@agentclientprotocol/claude-agent-acp`, `@agentclientprotocol/codex-acp`); OpenCode is native (`opencode acp`).
+- **Runtime reliability:** ACP startup/session establishment requests time out after 60s, control requests after 30s, and writes after 10s; `session/prompt` has no turn-duration limit. Cancellation allows 5s for graceful completion before killing the connection. Timeout/disconnect never replays a prompt or replaces a saved conversation with a new one. Drain ordered incoming notifications before recording turn usage. Fault coverage: `cargo test -p suneiro-core --test acp_transport --test runtime_reliability`.
 
 ## Layout
 
@@ -29,9 +30,14 @@ crates/core/              Rust core, UI-agnostic (no Tauri dependency)
   src/title.rs            Quick heuristic titles + Haiku summaries via `claude -p`
   src/catalog.rs          Per-agent model/effort catalog, discovered from ACP
                           configOptions (short discovery session or live sessions)
+  src/opencode.rs         Native OpenCode readiness and advertised-control validation;
+                          deterministic fixtures and opt-in smoke: docs/OPENCODE.md
+  src/verification.rs     Internal revision-bound checks and workspace locks (no desktop setup UI)
+  src/review.rs           Legacy restricted-session safety and guarded core integration
   src/workspace.rs        Repo config (suneiro.json / runner.json / conductor.json merged with
                           per-repo app settings), script env, workspace naming
   src/recent.rs           "Recents" for Add repository, from Claude/Codex history
+
   src/attachments.rs      Images attached to prompts, copied into the data dir
   src/usage.rs            Cost of usage rows: agent-reported, or estimated from
                           tokens with user prices (Settings → Pricing)
@@ -83,6 +89,7 @@ pnpm build                                 # Suneiro.app + .dmg
 pnpm bump 0.2.0                            # set the version everywhere; then tag v0.2.0 to release (docs/RELEASING.md)
 pnpm --filter desktop dev                  # UI only; open http://localhost:1420 (uses dev/mock.ts)
 cargo run -p suneiro-core --example detect  # what agent CLIs/logins Suneiro sees
+cargo run -p suneiro-core --example claude_smoke -- --check  # read-only Claude/Node/npx diagnostics; --catalog checks actual ACP startup; --run opts into billed fixture turns (docs/claude.md)
 cargo run -p suneiro-core --example e2e -- <repo> claude   # real end-to-end run
 # Real GitHub PR/checks e2e (opens, merges and closes PRs on a private fixture repo whose CI fails if a `FAIL` file exists):
 SUNEIRO_E2E_GH_REPO=steebchen/runner-e2e-test cargo test -p suneiro-core --test github_e2e -- --ignored --nocapture
@@ -95,7 +102,7 @@ SUNEIRO_E2E_GH_REPO=steebchen/runner-e2e-test cargo test -p suneiro-core --test 
 - **Every spawned process uses `env::tokio_command` / `env::std_command`**, so it gets the user's login-shell PATH.
 - **Events are the only way the UI learns about changes.** Core emits `Event`s; transcript events are persisted and replayed by the same reducer (`transcript.ts`). Add new UI-visible state as an `Event` variant plus a `CoreEvent` type in `api.ts`.
 - **Agent differences live in the core.** The UI renders ACP `configOptions` generically. Agent-specific mapping (e.g. plan vs. bypass modes) goes in `agent.rs`, with unit tests.
-- **Chats:** a workspace always keeps at least one chat; the last tab has no close button and `closeSession` (also ⌘W) ignores it.
+- **Chats:** a workspace always keeps at least one chat; the last tab has no close button and `closeSession` (also ⌘W) ignores it. Core/SQLite enforce this too. `Session.parentSessionId` persists the separate tab hierarchy; legacy chats are roots. `Core::create_child_session` / `create_sibling_session` atomically validate same-repository relationships (including cross-workspace children) against `Settings.max_tab_depth` (default 4, range 1..8; roots = depth 0). Detach keeps the subtree; closing a parent detaches immediate children to roots, never deletes descendants. `SessionAdded`, `SessionHierarchyChanged`, and `SessionRemoved` keep clients synchronized. `Store::subtree_session_ids` includes the root and descendants across workspaces. The tab tree rolls up status/unread with narrow row subscriptions; collapse state is a per-device convenience. Model/agent changes preserve the parent and never replace an empty chat that has children. See `docs/tab-hierarchy.md` for the contract and reproducible browser smoke.
 - **Models:** the picker (`ModelPicker.tsx`) shows the user's loadout (`Settings.loadout`, first entry = default for new workspaces) and searches all Claude/Codex models plus the OpenCode models chosen in settings. New chats (+ in the tab bar, ⌘T) open directly with that default; the model is changed in the composer. Picking another agent's model opens a new chat, which replaces the current chat if it's empty. New sessions get model/effort via `Core::create_session(.., model, effort)`, applied on connect.
 - **Questions:** Suneiro advertises `elicitation.form`, so agents ask structured questions over ACP `elicitation/create` (Claude's AskUserQuestion, Codex's request_user_input). Questions are never auto-answered. `lib/questions.ts` normalizes both schema styles, `QuestionCard.tsx` walks the user through them, and the answer goes back as `{action: accept|decline|cancel, content}`. Real-agent check: `cargo run -p suneiro-core --example ask -- <repo> claude|codex`.
 - **Menus and shortcuts:** app-level shortcuts are native menu items (`install_menu` in the Tauri crate) that emit a `menu` event; `runCommand` in `App.tsx` handles them, and the same ids are used for the in-page fallbacks.
@@ -104,7 +111,21 @@ SUNEIRO_E2E_GH_REPO=steebchen/runner-e2e-test cargo test -p suneiro-core --test 
 - **Images:** pasted, picked or dropped images are stored by `attachments.rs` in the app data dir; prompts carry their paths (`Agents::prompt_with`) and send ACP image blocks when the agent advertises `promptCapabilities.image` (otherwise file links). `UserMessage` events keep the paths so history shows thumbnails. Real check: `cargo run -p suneiro-core --example image -- <repo> claude|codex`.
 - **Branch names:** workspaces start on `<prefix><city>`; once the first task gets its (Haiku or heuristic) title, `Agents::name_branch` renames the branch to `<prefix><slug>` unless it was pushed (upstream set or the branch exists on origin) or `Settings.rename_branches` is off, and emits `WorkspaceBranch`.
 - **Checkpoints:** before each prompt the agent layer snapshots the worktree (`git::checkpoint`: a commit of all non-ignored files, parent = HEAD, kept under `refs/runner/checkpoints/<session>/`) and emits a persisted `Checkpoint` event. `Core::restore_checkpoint` puts HEAD and files back (after taking an undo checkpoint) and queues a note for the workspace's agents with their next prompt.
+- **Legacy operation safety:** core verification/review guards remain for persisted restricted sessions and internal callers, not as desktop setup workflows. Existing restricted sessions still deny permission requests and cannot elevate config or use delegation tools. Checks hold workspace locks, bind results to revision/content, block conflicting prompts/restores and count toward activity. Keep these protections and their tests; do not expose custom reviewer/check-preset/integration consoles. See `docs/VERIFICATION.md`.
 - **Permissions:** sessions auto-accept every permission request by default. Plan mode (Shift+Tab in the composer) forwards requests to the user. Agent permission pickers are hidden in the UI.
+
+
+
+- **Codex compatibility:** `codex.rs` owns safe CLI login labels, legacy `model[effort]` presets, read-only plan sandbox mapping, and reported-model attribution. Apply model before reasoning effort and reject unsupported choices instead of silently substituting. Codex plan uses both `mode=read-only` and `collaboration_mode=plan`; ordinary auto-accept retains full access. See `docs/codex.md` for deterministic fixtures, real-smoke command, observed adapter/CLI versions, and explicit live-verification limits.
+
+- **Chat-first product:** use normal chat and the model picker to work with built-in agents. `QuestionCard` keeps agent-authored questions in the conversation and submits only the user's explicit answers. Agent-created task results use compact related-chat updates, not task-launch/configuration forms. Retired feature settings are opaque compatibility data: preserve SQLite rows without exposing profile/context-handoff commands. `Agents::prompt_brief` remains for literal delegation prompts without implicit `@path` expansion.
+
+
+- **Admission and notifications:** `supervision.rs` retains atomic turn admission, original usage rows, task-report reconciliation and durable best-effort notification deduplication. Questions, errors and activity stay visible in chat, tab status and existing notifications; there is no separate Inbox/resource configuration console. Preserve saved pause/spend controls rather than silently bypassing them, and provide explicit contextual recovery when they would block new replies. No exact dollar-cap guarantee. See `docs/SUPERVISION.md`.
+
+
+- **Delegation:** `delegation.rs` persists scoped task launches, messages and immutable reports; `delegation_bridge.rs` exposes real stdio MCP tools through a private authenticated Unix socket (no TCP). Desktop handles `--suneiro-delegation-mcp` before Tauri starts. Default isolated checkout pins caller committed HEAD; shared files are opt-in. Frozen briefs use `Agents::prompt_brief` (no implicit @file context). Restart interrupts uncertain tasks, never replays a prompt; terminal reports reconcile by task ID. Users can open related chats manually when MCP/Unix support is unavailable; ordinary model selection and chat remain the interface. Contracts, limits and opt-in real-agent check: `docs/delegation.md`.
+
 - **Platform-specific code stays isolated** (e.g. `open -a` in the Tauri layer), so Linux and Windows remain additive.
 
 ## Brand and compatibility

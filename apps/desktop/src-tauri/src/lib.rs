@@ -5,10 +5,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use suneiro_core::{AgentDef, Core, Event, Repo, Session, Workspace};
 use serde_json::Value;
+use suneiro_core::{AgentDef, Core, Event, Repo, Session, Workspace};
 use tauri::ipc::{Channel, InvokeResponseBody};
 use tauri::{Emitter, Manager, RunEvent, State};
+
+
+mod supervision;
+
+mod delegation;
 
 mod updater;
 
@@ -102,8 +107,16 @@ async fn create_workspace(app: State<'_, App>, repo_id: String) -> Res<Workspace
 }
 
 #[tauri::command]
-async fn create_workspace_from(app: State<'_, App>, repo_id: String, branch: Option<String>, pr: Option<u64>) -> Res<Workspace> {
-    app.core.create_workspace_from(&repo_id, branch.as_deref(), pr).await.map_err(err)
+async fn create_workspace_from(
+    app: State<'_, App>,
+    repo_id: String,
+    branch: Option<String>,
+    pr: Option<u64>,
+) -> Res<Workspace> {
+    app.core
+        .create_workspace_from(&repo_id, branch.as_deref(), pr)
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -175,7 +188,44 @@ async fn create_session(
     model: Option<String>,
     effort: Option<String>,
 ) -> Res<Session> {
-    app.core.create_session(&workspace_id, &agent_id, model, effort).map_err(err)
+
+    app.core
+        .create_session(&workspace_id, &agent_id, model, effort)
+        .map_err(err)
+
+}
+
+#[tauri::command]
+fn create_child_session(
+    app: State<'_, App>,
+    parent_session_id: String,
+    workspace_id: String,
+    agent_id: String,
+    model: Option<String>,
+    effort: Option<String>,
+) -> Res<Session> {
+    app.core
+        .create_child_session(&parent_session_id, &workspace_id, &agent_id, model, effort)
+        .map_err(err)
+}
+
+#[tauri::command]
+fn create_sibling_session(
+    app: State<'_, App>,
+    sibling_session_id: String,
+    workspace_id: String,
+    agent_id: String,
+    model: Option<String>,
+    effort: Option<String>,
+) -> Res<Session> {
+    app.core
+        .create_sibling_session(&sibling_session_id, &workspace_id, &agent_id, model, effort)
+        .map_err(err)
+}
+
+#[tauri::command]
+fn detach_session(app: State<'_, App>, session_id: String) -> Res<Session> {
+    app.core.detach_session(&session_id).map_err(err)
 }
 
 /// Start a chat's agent without prompting (e.g. to show its model options).
@@ -197,12 +247,20 @@ fn session_events(app: State<'_, App>, session_id: String) -> Res<Vec<Value>> {
 
 #[tauri::command]
 async fn send_prompt(app: State<'_, App>, session_id: String, text: String, images: Option<Vec<String>>) -> Res<()> {
-    app.core.agents.prompt_with(&session_id, text, images.unwrap_or_default()).map_err(err)
+    app.core
+        .agents
+        .prompt_with(&session_id, text, images.unwrap_or_default())
+        .map_err(err)
 }
 
 #[tauri::command]
 async fn steer(app: State<'_, App>, session_id: String, text: String, images: Option<Vec<String>>) -> Res<String> {
-    app.core.agents.steer_with(&session_id, text, images.unwrap_or_default()).await.map(str::to_string).map_err(err)
+    app.core
+        .agents
+        .steer_with(&session_id, text, images.unwrap_or_default())
+        .await
+        .map(str::to_string)
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -232,17 +290,29 @@ async fn respond_permission(
     request_id: String,
     option_id: Option<String>,
 ) -> Res<()> {
-    app.core.agents.respond_permission(&session_id, &request_id, option_id).await.map_err(err)
+    app.core
+        .agents
+        .respond_permission(&session_id, &request_id, option_id)
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
 async fn answer_question(app: State<'_, App>, session_id: String, request_id: String, response: Value) -> Res<()> {
-    app.core.agents.answer_question(&session_id, &request_id, response).await.map_err(err)
+    app.core
+        .agents
+        .answer_question(&session_id, &request_id, response)
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
 async fn set_config(app: State<'_, App>, session_id: String, config_id: String, value: Value) -> Res<()> {
-    app.core.agents.set_config(&session_id, &config_id, value).await.map_err(err)
+    app.core
+        .agents
+        .set_config(&session_id, &config_id, value)
+        .await
+        .map_err(err)
 }
 
 #[tauri::command]
@@ -430,11 +500,13 @@ fn save_settings(app: State<'_, App>, settings: suneiro_core::setup::Settings) -
 
 #[tauri::command]
 async fn detect_agents() -> Vec<suneiro_core::setup::AgentStatus> {
+
     let (a, b, c) = tokio::join!(
         suneiro_core::setup::detect("claude"),
         suneiro_core::setup::detect("codex"),
         suneiro_core::setup::detect("opencode"),
     );
+
     [a, b, c].into_iter().flatten().collect()
 }
 
@@ -473,7 +545,10 @@ fn open_path(path: String, app_name: Option<String>) -> Res<()> {
         cmd.args(["-a", &name]);
     }
     let status = cmd.arg(&path).status().map_err(|e| e.to_string())?;
-    status.success().then_some(()).ok_or_else(|| format!("could not open {path}"))
+    status
+        .success()
+        .then_some(())
+        .ok_or_else(|| format!("could not open {path}"))
 }
 
 /// Default macOS menus, plus Suneiro's own items. Custom items emit a "menu"
@@ -486,7 +561,10 @@ fn install_menu(app: &mut tauri::App) -> tauri::Result<()> {
     for (i, entry) in menu.items()?.into_iter().enumerate() {
         let MenuItemKind::Submenu(sub) = entry else { continue };
         if i == 0 {
-            sub.insert(&MenuItem::with_id(handle, "check-updates", "Check for Updates…", true, None::<&str>)?, 1)?;
+            sub.insert(
+                &MenuItem::with_id(handle, "check-updates", "Check for Updates…", true, None::<&str>)?,
+                1,
+            )?;
             sub.insert(&PredefinedMenuItem::separator(handle)?, 2)?;
             sub.insert(&item("settings", "Settings…", "CmdOrCtrl+,")?, 3)?;
         } else if sub.text()? == "File" {
@@ -495,7 +573,11 @@ fn install_menu(app: &mut tauri::App) -> tauri::Result<()> {
                 sub.remove(&old)?;
             }
             sub.append(&item("new-workspace", "New Workspace", "CmdOrCtrl+N")?)?;
-            sub.append(&item("new-workspace-from", "New Workspace from Branch or PR…", "CmdOrCtrl+Shift+N")?)?;
+            sub.append(&item(
+                "new-workspace-from",
+                "New Workspace from Branch or PR…",
+                "CmdOrCtrl+Shift+N",
+            )?)?;
             sub.append(&item("new-chat", "New Chat", "CmdOrCtrl+T")?)?;
             sub.append(&PredefinedMenuItem::separator(handle)?)?;
             sub.append(&item("palette", "Command Palette…", "CmdOrCtrl+K")?)?;
@@ -524,6 +606,7 @@ pub fn run() {
             bus.start();
             let sink_bus = bus.clone();
             let core = Core::new(&data_dir, Arc::new(move |e| sink_bus.queue.lock().push(e)))?;
+            core.set_delegation_executable(&std::env::current_exe()?)?;
             let poller = core.clone();
             tauri::async_runtime::spawn(async move { poller.start_pr_poller() });
             app.manage(App { core, bus });
@@ -532,7 +615,18 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+
+
+            supervision::subtree_resources,
+            supervision::supervision_inbox,
+            supervision::dismiss_inbox,
+            supervision::claim_notification,
+            supervision::repo_controls,
+            supervision::save_repo_controls,
+            supervision::repo_resources,
+
             subscribe,
+
             list_agents,
             list_repos,
             add_repo,
@@ -605,6 +699,15 @@ pub fn run() {
             updater::update_status,
             updater::install_update,
             updater::cancel_update,
+            delegation::delegate_task,
+            delegation::delegation_tasks,
+            delegation::delegation_messages,
+            delegation::delegation_send,
+            delegation::delegation_cancel,
+            delegation::delegation_finish,
+            create_child_session,
+            create_sibling_session,
+            detach_session,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

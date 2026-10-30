@@ -10,7 +10,7 @@ React UI inside a Tauri desktop app; macOS first.
 
 ## Product Purpose
 
-Run Claude Code, Codex and OpenCode in parallel git worktrees, review their changes and ship pull requests from one desktop app.
+Chat with Claude Code, Codex and OpenCode, keep related tasks in connected conversations, review their changes and ship pull requests from one desktop app. Separate workspaces provide separate git checkouts; conversations within a workspace share files.
 
 ## Users and Operating Context
 
@@ -18,7 +18,9 @@ Developers working across coding tasks, agent conversations, terminals and GitHu
 
 ## Capabilities and Constraints
 
-Preserve chat, workspace creation and archiving, diff review, PRs, terminals, settings and keyboard shortcuts. Support system, light and dark themes. Keep existing Runner sessions, scripts and workspace paths usable after the rename.
+Chat is the main interface. Keep ordinary model selection, parent/child/sibling conversations, agent questions the user can fill out, compact updates from related tasks, human diff review, PRs, terminals, checkpoints and keyboard shortcuts. Use sensible defaults rather than setup forms. Agent profiles, context-handoff builders, custom reviewers and advanced workflow consoles are outside the product surface. Support system, light and dark themes. Keep existing sessions, scripts, saved settings and workspace paths usable.
+
+Provider capabilities differ and account limits still apply. Questions require an explicit user answer. Plan mode is not an OS sandbox. Preserve runtime safety and restrictions on existing sessions even when their old setup controls are not part of the interface. Isolated delegated work starts from a committed revision; uncommitted parent changes are not silently copied.
 
 ## Brand Commitments
 

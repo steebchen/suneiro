@@ -2,7 +2,7 @@
 
 <img src="apps/desktop/public/suneiro-mark.svg" alt="Suneiro" width="72" height="72" />
 
-Run Claude Code, Codex and OpenCode in parallel, each in its own git worktree, then review the diffs and ship PRs from one fast desktop app.
+Run Claude Code, Codex and OpenCode in parallel workspaces, review their changes and ship PRs from one desktop app. Each workspace has its own git checkout; chats within a workspace share its files.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/workspace-dark.png" />
@@ -14,9 +14,12 @@ Suneiro uses the agent CLIs you already have and the subscriptions you're alread
 ## Features
 
 - **Workspaces**: every task gets its own git worktree and branch, created from the latest upstream base branch. The branch is renamed after the task (`suneiro/fix-login-bug`) until it's pushed. Start from scratch, from an existing branch, or from a pull request (⇧⌘N).
-- **Agents over ACP**: Claude Code, Codex and OpenCode all speak the [Agent Client Protocol](https://agentclientprotocol.com), so the chat UI, tool calls, plans, questions, slash commands and model pickers work the same for every agent.
+- **Agents over ACP**: Claude Code, Codex and OpenCode share one interface through the [Agent Client Protocol](https://agentclientprotocol.com). Available models, tools and controls depend on the connected agent and its version. Live steering follows negotiated capabilities; otherwise “Send now” interrupts the current turn. Image input also depends on the selected model.
 - **Chat**: attach screenshots (paste, pick or drop), `@`-mention files, `/` commands, queue or steer follow-ups, recall earlier prompts with ↑, find in chat (⌘F), and restore the workspace's files to how they were before any message (checkpoints, with undo).
-- **Review**: changed files and syntax-highlighted diffs against the merge base, "viewed" marks, line comments sent back to the agent, and per-file discard. The sidebar shows each workspace's `+/−` lines.
+- **Related chats**: persistent parent, child and sibling conversations, collapsible trees, breadcrumbs and descendant activity. Related chats can use different workspaces in the same repository; shared-workspace chats share files. Nesting defaults to four levels and can be configured.
+- **Agent questions**: answer the agent's questions directly in chat. Pick options, add a note or type an answer, then submit when ready. Questions are never answered automatically.
+- **Work together through chat**: ask an agent to start a related task where its adapter supports the local delegation tools, or open a child chat yourself. Results appear as compact chat updates with a link to the conversation. Isolated agent tasks start from a committed revision; chats in one workspace share files. [Delegation and limitations](docs/delegation.md).
+- **Review**: inspect syntax-highlighted diffs, mark files viewed, send line comments back to the agent and discard individual file changes. The sidebar shows each workspace's `+/−` lines.
 - **Stay in sync**: see when the base branch moved on and merge it in with one click; conflicts can be handed to the agent.
 - **Ship**: create a PR (with an AI-written title and description if you like), push with generated commit messages, view CI checks, "fix failing checks", merge, and archive merged workspaces.
 - **Terminals**: per-workspace shells and a one-click `run` script, with clickable links and an "open" button for the dev server it starts. Each workspace gets its own `SUNEIRO_PORT` range.
@@ -25,7 +28,7 @@ Suneiro uses the agent CLIs you already have and the subscriptions you're alread
 ## Requirements
 
 - macOS (Linux and Windows are planned; the core is platform-neutral)
-- Rust 1.85+, Node 20+, pnpm
+- Rust 1.85+, Node 22+, pnpm
 - `git`, and optionally `gh` (for PRs)
 - At least one agent: `claude`, `codex` or `opencode`. The Claude and Codex ACP adapters run via `npx`.
 
@@ -39,7 +42,7 @@ pnpm typecheck
 pnpm build         # Suneiro.app + .dmg in target/release/bundle
 ```
 
-UI-only work: run `pnpm --filter desktop dev` and open http://localhost:1420. In a plain browser, a fake backend (`src/dev/mock.ts`) streams scripted agent output. It is only loaded in dev mode.
+UI-only work: run `pnpm --filter desktop dev` and open http://localhost:1420. In a plain browser, a fake backend (`src/dev/mock.ts`) streams scripted agent output. It is only loaded in dev mode. `PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs node scripts/chat-first-smoke.mjs` checks the chat interface, explicit question submission, related-chat results and desktop layouts against that mock.
 
 Real end-to-end smoke test against your installed agents:
 
@@ -47,6 +50,8 @@ Real end-to-end smoke test against your installed agents:
 cargo run -p suneiro-core --example detect                 # what Suneiro sees
 cargo run -p suneiro-core --example e2e -- /path/to/repo claude
 ```
+
+Agent-specific verification and limitations: [Claude](docs/claude.md), [Codex](docs/codex.md), [OpenCode](docs/OPENCODE.md). Live tests use your installed CLI and existing login; account limits still apply. ACP timeouts never automatically replay a prompt or replace a saved conversation.
 
 ## Repository config: `suneiro.json`
 
