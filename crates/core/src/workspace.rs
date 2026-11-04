@@ -28,12 +28,49 @@ pub struct RepoConfig {
 /// same `scripts` shape, so repos set up for Conductor work as they are.
 pub const CONFIG_FILES: &[&str] = &["suneiro.json", "runner.json", "conductor.json"];
 
+/// Newer Conductor versions keep the scripts in this TOML file instead of
+/// `conductor.json`. Read last, after the JSON files.
+pub const CONDUCTOR_SETTINGS: &str = ".conductor/settings.toml";
+
 /// The config file committed in a checkout, if any, and its name.
 pub fn load_file_config(dir: &Path) -> Option<(&'static str, RepoConfig)> {
-    CONFIG_FILES.iter().find_map(|name| {
-        let text = std::fs::read_to_string(dir.join(name)).ok()?;
-        serde_json::from_str(&text).ok().map(|c| (*name, c))
-    })
+    CONFIG_FILES
+        .iter()
+        .find_map(|name| {
+            let text = std::fs::read_to_string(dir.join(name)).ok()?;
+            serde_json::from_str(&text).ok().map(|c| (*name, c))
+        })
+        .or_else(|| {
+            let read = |name: &str| std::fs::read_to_string(dir.join(name)).ok().and_then(|t| conductor_toml_scripts(&t));
+            let shared = read(CONDUCTOR_SETTINGS);
+            // The personal, uncommitted file overrides the shared one per script.
+            let local = read(CONDUCTOR_LOCAL_SETTINGS);
+            let name = if shared.is_some() { CONDUCTOR_SETTINGS } else { CONDUCTOR_LOCAL_SETTINGS };
+            let (shared, local) = (shared.unwrap_or_default(), local.unwrap_or_default());
+            let scripts = Scripts {
+                setup: local.setup.or(shared.setup),
+                run: local.run.or(shared.run),
+                archive: local.archive.or(shared.archive),
+            };
+            (scripts.setup.is_some() || scripts.run.is_some() || scripts.archive.is_some())
+                .then(|| (name, RepoConfig { scripts, copy: Vec::new() }))
+        })
+}
+
+/// Personal Conductor settings next to `settings.toml` (usually not committed).
+pub const CONDUCTOR_LOCAL_SETTINGS: &str = ".conductor/settings.local.toml";
+
+/// `[scripts]` setup/run/archive of a Conductor `settings.toml`; `None` when
+/// the file doesn't parse or sets none of them.
+pub fn conductor_toml_scripts(text: &str) -> Option<Scripts> {
+    #[derive(Deserialize)]
+    struct File {
+        scripts: Option<Scripts>,
+    }
+    let scripts = toml::from_str::<File>(text).ok()?.scripts?;
+    let set = |s: Option<String>| s.filter(|s| !s.trim().is_empty());
+    let scripts = Scripts { setup: set(scripts.setup), run: set(scripts.run), archive: set(scripts.archive) };
+    (scripts.setup.is_some() || scripts.run.is_some() || scripts.archive.is_some()).then_some(scripts)
 }
 
 /// The committed file wins per script; settings made in the app fill the
@@ -169,6 +206,31 @@ mod tests {
         let (name, config) = load_file_config(dir.path()).unwrap();
         assert_eq!(name, "suneiro.json");
         assert_eq!(config.scripts.run.as_deref(), Some("pnpm start"));
+    }
+
+    #[test]
+    fn reads_conductor_settings_toml_last() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".conductor")).unwrap();
+        std::fs::write(
+            dir.path().join(CONDUCTOR_SETTINGS),
+            "\"$schema\" = \"https://conductor.build/schemas/settings.repo.schema.json\"\n\n[scripts]\nsetup = \"cp \\\"$CONDUCTOR_ROOT_PATH/.env\\\" .\\n\\npnpm install\"\nrun_mode = \"concurrent\"\n",
+        )
+        .unwrap();
+        let (name, config) = load_file_config(dir.path()).unwrap();
+        assert_eq!(name, CONDUCTOR_SETTINGS);
+        assert_eq!(config.scripts.setup.as_deref(), Some("cp \"$CONDUCTOR_ROOT_PATH/.env\" .\n\npnpm install"));
+        assert!(config.scripts.run.is_none());
+        std::fs::write(dir.path().join(CONDUCTOR_LOCAL_SETTINGS), "[scripts]\nrun = \"pnpm dev\"\nsetup = \"\"\n").unwrap();
+        let (_, config) = load_file_config(dir.path()).unwrap();
+        assert_eq!(config.scripts.run.as_deref(), Some("pnpm dev"), "local file adds scripts");
+        assert!(config.scripts.setup.as_deref().is_some_and(|s| s.contains("pnpm install")), "empty local script doesn't hide the shared one");
+        // A file without scripts (e.g. settings.local.toml-style) doesn't count.
+        assert!(conductor_toml_scripts("spotlight_testing = true\n[scripts]\nrun_mode = \"concurrent\"\n").is_none());
+        assert!(conductor_toml_scripts("not toml [").is_none());
+        // conductor.json still wins over the TOML file.
+        std::fs::write(dir.path().join("conductor.json"), r#"{"scripts":{"setup":"npm ci"}}"#).unwrap();
+        assert_eq!(load_file_config(dir.path()).unwrap().0, "conductor.json");
     }
 
     #[test]

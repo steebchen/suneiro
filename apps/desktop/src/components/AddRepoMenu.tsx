@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
-import { Folder, FolderOpen, Globe, Loader2 } from "lucide-react";
+import { ArrowDownToLine, Folder, FolderOpen, Globe, Loader2 } from "lucide-react";
 import { actions, useStore } from "../lib/store";
 import { pickRepo } from "../App";
+import { useConductorPending } from "./ConductorImport";
 
 const tilde = (p: string) => p.replace(/^\/Users\/[^/]+/, "~");
 
@@ -29,6 +30,8 @@ export function AddRepoMenu({ trigger, align = "left" }: { trigger: (open: () =>
 
 function Popover({ anchor, align, onClose }: { anchor: HTMLElement; align: "left" | "right" | "center"; onClose: () => void }) {
   const recents = useStore((s) => s.recents);
+  const conductor = useStore((s) => !!s.conductor?.detected);
+  const pending = useConductorPending();
   const [cloning, setCloning] = useState(false);
   const [spec, setSpec] = useState("");
   const [busy, setBusy] = useState(false);
@@ -118,6 +121,18 @@ function Popover({ anchor, align, onClose }: { anchor: HTMLElement; align: "left
       ) : (
         <button className={row} onClick={() => setCloning(true)}>
           <Globe size={15} className="text-muted" /> Clone from GitHub…
+        </button>
+      )}
+      {conductor && (
+        <button
+          className={row}
+          onClick={() => {
+            onClose();
+            actions.openConductorImport();
+          }}
+        >
+          <ArrowDownToLine size={15} className="text-muted" /> Import from Conductor…
+          {pending > 0 && <span className="ml-auto text-[11px] text-muted">{pending}</span>}
         </button>
       )}
       {recents.length > 0 && (

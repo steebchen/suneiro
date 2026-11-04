@@ -40,6 +40,26 @@ const workspaces = [
 const archived: any[] = [
   { id: "w9", repoId: "r1", name: "oslo", branch: "suneiro/oslo", baseBranch: "main", path: "/tmp/oslo", status: "archived", createdAt: Date.now() - 9 * 86400e3, title: "Migrate to Postgres 17", archivedAt: Date.now() - 2 * 86400e3 },
 ];
+const conductorWorkspaces: { key: string; repoName: string; repoPath: string; path: string; name: string; branch: string; baseBranch: string | null; title: string; lastActivity: number | null; archivedInConductor: boolean; chats: number; imported: string | null }[] = [
+  ["acme-web", "santiago", "fix-checkout-totals", "Fix rounding in checkout totals", 2, 2, false],
+  ["acme-web", "kyiv", "kyiv", "kyiv", 0, 30, false],
+  ["acme-api", "bern-v1", "webhooks-retry", "Retry failed webhooks with backoff", 1, 5, false],
+  ["billing", "nassau", "seat-based-pro-plan", "feat(billing): seat-based Pro plan", 3, 1, false],
+  ["billing", "riga-v3", "refund-labels", "fix: label plan refunds", 1, 60, true],
+].map(([repo, name, branch, title, chats, days, archived]) => ({
+  key: `/Users/dev/conductor/workspaces/${repo}/${name}`,
+  repoName: repo as string,
+  repoPath: repo === "billing" ? "/Users/dev/projects/billing" : `/Users/dev/${repo}`,
+  path: `/Users/dev/conductor/workspaces/${repo}/${name}`,
+  name: name as string,
+  branch: branch as string,
+  baseBranch: "main",
+  title: title as string,
+  lastActivity: Date.now() - (days as number) * 86400e3,
+  archivedInConductor: archived as boolean,
+  chats: chats as number,
+  imported: null,
+}));
 const sessions: Record<string, any[]> = {
   w1: [
     { id: "s1", workspaceId: "w1", agentId: "claude", acpSessionId: "a1", parentSessionId: null, title: "Add rate limiting to the API", createdAt: 1 },
@@ -404,6 +424,29 @@ const handlers: Record<string, (a: any) => any> = {
     { path: "/Users/dev/projects/example-project", name: "example-project", lastUsed: Date.now() },
     { path: "/Users/dev/projects/contracts", name: "contracts", lastUsed: Date.now() },
   ],
+  conductor_scan: () => ({
+    detected: true,
+    root: "/Users/dev/conductor",
+    dbError: null,
+    workspaces: conductorWorkspaces.map((w) => ({ ...w })),
+    unavailable: [{ path: "/Users/dev/conductor/workspaces/runner/skopje", reason: "its repository moved or the worktree was pruned; run `git worktree repair` in the repository first" }],
+  }),
+  conductor_import: async (a) => {
+    await sleep(600);
+    const imported: any[] = [];
+    for (const key of a.keys as string[]) {
+      const c = conductorWorkspaces.find((w) => w.key === key);
+      if (!c || c.imported) continue;
+      let repo = repos.find((r) => r.path === c.repoPath);
+      if (!repo) repos.push((repo = { id: `r${Date.now()}${repos.length}`, name: c.repoName, path: c.repoPath, defaultBranch: "main" }));
+      const ws = { id: `cw${Date.now()}${imported.length}`, repoId: repo.id, name: c.name, branch: c.branch, baseBranch: "main", path: c.path, status: "ready", createdAt: Date.now(), title: c.title, archivedAt: null, unread: false };
+      workspaces.unshift(ws as any);
+      sessions[ws.id] = [{ id: `${ws.id}-s`, workspaceId: ws.id, agentId: "claude", acpSessionId: null, parentSessionId: null, title: c.title, createdAt: Date.now(), model: null, effort: null }];
+      c.imported = ws.id;
+      imported.push({ ...ws });
+    }
+    return { imported, skipped: [], scriptsFor: [] };
+  },
   clone_repo: async (a) => {
     await sleep(800);
     return { id: `r${Date.now()}`, name: a.spec.split("/").pop(), path: `/Users/dev/projects/${a.spec.split("/").pop()}`, defaultBranch: "main" };

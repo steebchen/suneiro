@@ -16,6 +16,38 @@ export type Workspace = {
   unread: boolean;
 };
 
+/** A Conductor worktree that can be imported (see core `conductor.rs`). */
+export type ConductorWorkspace = {
+  /** Stable import key: the worktree's canonical path. */
+  key: string;
+  repoName: string;
+  repoPath: string;
+  path: string;
+  name: string;
+  branch: string;
+  baseBranch: string | null;
+  title: string;
+  lastActivity: number | null;
+  archivedInConductor: boolean;
+  chats: number;
+  /** Suneiro workspace it already exists as. */
+  imported: string | null;
+};
+
+export type ConductorScan = {
+  detected: boolean;
+  root: string;
+  dbError: string | null;
+  workspaces: ConductorWorkspace[];
+  unavailable: { path: string; reason: string }[];
+};
+
+export type ConductorImportReport = {
+  imported: Workspace[];
+  skipped: { key: string; reason: string }[];
+  scriptsFor: string[];
+};
+
 export type Session = {
   id: string;
   workspaceId: string;
@@ -204,6 +236,8 @@ export const api = {
   listRepos: () => invoke<Repo[]>("list_repos"),
   addRepo: (path: string) => invoke<Repo>("add_repo", { path }),
   recentProjects: () => invoke<{ path: string; name: string; lastUsed: number }[]>("recent_projects"),
+  conductorScan: () => invoke<ConductorScan>("conductor_scan"),
+  conductorImport: (keys: string[], history: boolean) => invoke<ConductorImportReport>("conductor_import", { keys, history }),
   cloneRepo: (spec: string) => invoke<Repo>("clone_repo", { spec }),
   removeRepo: (repoId: string) => invoke<void>("remove_repo", { repoId }),
   reorderRepos: (repoIds: string[]) => invoke<void>("reorder_repos", { repoIds }),

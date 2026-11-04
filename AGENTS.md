@@ -37,6 +37,9 @@ crates/core/              Rust core, UI-agnostic (no Tauri dependency)
   src/workspace.rs        Repo config (suneiro.json / runner.json / conductor.json merged with
                           per-repo app settings), script env, workspace naming
   src/recent.rs           "Recents" for Add repository, from Claude/Codex history
+  src/conductor.rs        Read-only Conductor import: worktree scan, immutable DB reads,
+                          chat transcripts (docs/conductor-import.md). Never write to
+                          ~/conductor or Conductor's app data
 
   src/attachments.rs      Images attached to prompts, copied into the data dir
   src/usage.rs            Cost of usage rows: agent-reported, or estimated from

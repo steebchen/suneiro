@@ -81,9 +81,12 @@ export function Settings() {
           </Section>
           <Section
             title="Repositories"
-            description="Scripts that set up, run and clean up workspaces, and files to copy into them. A suneiro.json (or conductor.json) committed to the repository takes precedence."
+            description="Scripts that set up, run and clean up workspaces, and files to copy into them. A suneiro.json (or conductor.json, or Conductor's .conductor/settings.toml) committed to the repository takes precedence."
           >
             <RepoSettings />
+          </Section>
+          <Section title="Import" description="Bring workspaces over from another app. Their worktrees, branches and uncommitted changes stay where they are.">
+            <ConductorSettings />
           </Section>
           <Section title="Appearance & tools">
             <Field label="Theme">
@@ -327,6 +330,27 @@ function PriceInput({ value, onCommit }: { value?: number; onCommit: (v: string)
       onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
       className="selectable w-full rounded border border-border bg-bg px-1.5 py-1 text-right text-xs tabular-nums outline-none focus:border-accent"
     />
+  );
+}
+
+function ConductorSettings() {
+  const scan = useStore((s) => s.conductor);
+  const pending = scan?.workspaces.filter((w) => !w.imported).length ?? 0;
+  const hint = !scan
+    ? "Looking for Conductor…"
+    : !scan.detected
+      ? "Conductor wasn't found on this Mac."
+      : `${scan.workspaces.length} workspace${scan.workspaces.length === 1 ? "" : "s"} found, ${pending} not imported yet. Conductor's files are only read, never changed.`;
+  return (
+    <Field label="Conductor" hint={hint}>
+      <button
+        onClick={() => actions.openConductorImport()}
+        disabled={!scan?.detected}
+        className="rounded-md border border-border px-2.5 py-1.5 text-xs hover:bg-hover disabled:opacity-50"
+      >
+        Import from Conductor…
+      </button>
+    </Field>
   );
 }
 

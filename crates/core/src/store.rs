@@ -190,6 +190,7 @@ impl Store {
             [id],
         )?;
         conn.execute("DELETE FROM sessions WHERE workspace_id IN (SELECT id FROM workspaces WHERE repo_id = ?1)", [id])?;
+        conn.execute("DELETE FROM workspace_imports WHERE workspace_id IN (SELECT id FROM workspaces WHERE repo_id = ?1)", [id])?;
         conn.execute("DELETE FROM workspaces WHERE repo_id = ?1", [id])?;
         conn.execute("DELETE FROM repos WHERE id = ?1", [id])?;
         Ok(())
@@ -393,6 +394,67 @@ impl Store {
         }
     }
 
+    /// Import key -> workspace id for everything imported from `source` whose
+    /// workspace still exists.
+    pub fn imported_workspaces(&self, source: &str) -> Result<std::collections::HashMap<String, String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT i.key, i.workspace_id FROM workspace_imports i JOIN workspaces w ON w.id = i.workspace_id WHERE i.source = ?1",
+        )?;
+        let rows = stmt.query_map([source], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The source a workspace was imported from (e.g. `conductor`), if any.
+    pub fn import_source(&self, workspace_id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .lock()
+            .query_row("SELECT source FROM workspace_imports WHERE workspace_id = ?1", [workspace_id], |r| r.get(0))
+            .optional()?)
+    }
+
+    /// Any workspace (archived too) whose worktree is `path`.
+    pub fn workspace_by_path(&self, path: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .lock()
+            .query_row("SELECT id FROM workspaces WHERE path = ?1 ORDER BY created_at DESC LIMIT 1", [path], |r| r.get(0))
+            .optional()?)
+    }
+
+    /// Add an imported workspace, its chats with their transcripts and the
+    /// import record in one transaction. Fails (and adds nothing) if `key`
+    /// was already imported from `source`.
+    pub fn import_workspace(&self, ws: &Workspace, source: &str, key: &str, chats: &[(Session, Vec<Value>)]) -> Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "DELETE FROM workspace_imports WHERE source = ?1 AND key = ?2 AND workspace_id NOT IN (SELECT id FROM workspaces)",
+            params![source, key],
+        )?;
+        tx.execute(
+            "INSERT INTO workspace_imports (source, key, workspace_id, imported_at) VALUES (?1, ?2, ?3, ?4)",
+            params![source, key, ws.id, now()],
+        )?;
+        tx.execute(
+            "INSERT INTO workspaces (id, repo_id, name, branch, base_branch, path, status, created_at, title) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![ws.id, ws.repo_id, ws.name, ws.branch, ws.base_branch, ws.path, ws.status, ws.created_at, ws.title],
+        )?;
+        for (s, events) in chats {
+            tx.execute(
+                "INSERT INTO sessions (id, workspace_id, agent_id, acp_session_id, title, created_at, model, effort, parent_session_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![s.id, s.workspace_id, s.agent_id, s.acp_session_id, s.title, s.created_at, s.model, s.effort, s.parent_session_id],
+            )?;
+            let mut stmt = tx.prepare_cached("INSERT INTO events (session_id, data) VALUES (?1, ?2)")?;
+            for e in events {
+                stmt.execute(params![s.id, e.to_string()])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Queue an event for persistence. Writes are batched on a background thread.
     pub fn append_event(&self, session_id: &str, event: Value) {
         let _ = self.writer.send((session_id.to_string(), event));
@@ -430,6 +492,18 @@ fn migrate(conn: &Connection) -> Result<()> {
     conn.execute_batch("CREATE INDEX IF NOT EXISTS sessions_parent ON sessions(parent_session_id);")?;
     // 0 for repos added before ordering existed, which keeps them sorted by name.
     add_column("repos", "position", "INTEGER NOT NULL DEFAULT 0")?;
+    // Workspaces imported from another tool (e.g. Conductor), keyed by the
+    // source's identity for the worktree so imports don't duplicate.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS workspace_imports (
+            source TEXT NOT NULL,
+            key TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            imported_at INTEGER NOT NULL,
+            PRIMARY KEY (source, key)
+        );
+        CREATE INDEX IF NOT EXISTS workspace_imports_workspace ON workspace_imports(workspace_id);",
+    )?;
     Ok(())
 }
 

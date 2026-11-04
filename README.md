@@ -70,7 +70,13 @@ Optional, committed at the repo root:
 
 `setup` runs in each new worktree (output appears in the Setup tab). `copy` brings gitignored files over from the main checkout. Scripts and workspace terminals get `SUNEIRO_ROOT_PATH`, `SUNEIRO_WORKSPACE_NAME`, `SUNEIRO_WORKSPACE_PATH` and `SUNEIRO_PORT` (the first of 10 ports reserved for the workspace, so dev servers of parallel workspaces don't collide).
 
-Configuration is read from `suneiro.json`, then legacy `runner.json`, then `conductor.json` (first readable, valid file wins). `RUNNER_*` and `CONDUCTOR_*` remain aliases for the `SUNEIRO_*` script variables. The same settings can also be made per repository in Settings → Repositories; a committed file takes precedence per script.
+Configuration is read from `suneiro.json`, then legacy `runner.json`, then `conductor.json` (first readable, valid file wins), then Conductor's `.conductor/settings.toml` (with `.conductor/settings.local.toml` overriding it per script). `RUNNER_*` and `CONDUCTOR_*` remain aliases for the `SUNEIRO_*` script variables. The same settings can also be made per repository in Settings → Repositories; a committed file takes precedence per script.
+
+## Importing from Conductor
+
+When Conductor is installed, Suneiro offers **Import from Conductor** (first-run hint, Add repository menu, ⌘K, Settings → Import). It lists the worktrees in `~/conductor/workspaces`, grouped by repository, with branch, title, chat count and last activity from Conductor's database. Imported workspaces point at the existing worktree: no new checkout, no branch change, uncommitted work stays. Repository scripts from Conductor's database are copied into Settings → Repositories when the repo has none; `conductor.json` and `.conductor/settings.toml` are read as they are. Up to 20 recent chats per workspace come along as history (agents start a new conversation when you continue). Importing again skips what is already in Suneiro.
+
+Conductor's data is only ever read: its database is opened read-only and `immutable`, worktrees are inspected through their files without running git, and archiving an imported workspace in Suneiro only hides it, leaving the worktree in place. Details and limits: [docs/conductor-import.md](docs/conductor-import.md).
 
 ## Upgrading from Runner
 

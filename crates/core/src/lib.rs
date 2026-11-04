@@ -8,6 +8,7 @@ pub mod attachments;
 pub mod catalog;
 
 pub mod capabilities;
+pub mod conductor;
 pub mod opencode;
 mod codex;
 
@@ -435,6 +436,17 @@ impl Core {
             bail!("workspace is not archived");
         }
         let repo = self.store.repo(&ws.repo_id)?;
+        if let Some(source) = self.store.import_source(&ws.id)? {
+            // Archiving left the imported worktree alone; show it again as it is.
+            if !Path::new(&ws.path).join(".git").exists() {
+                bail!("the {source} worktree at {} is gone, so this workspace can't be restored", ws.path);
+            }
+            self.store.set_archived_at(&ws.id, None)?;
+            self.set_status(&ws.id, "ready");
+            ws.status = "ready".into();
+            ws.archived_at = None;
+            return Ok(ws);
+        }
         if !git::branch_exists(Path::new(&repo.path), &ws.branch).await {
             bail!(
                 "branch `{}` no longer exists, so this workspace can't be restored",
@@ -562,7 +574,11 @@ impl Core {
             self.agents.close(&s.id);
         }
         let path = Path::new(&ws.path);
-        if path.exists() {
+        // Imported worktrees belong to the tool they came from (e.g. Conductor):
+        // archiving only hides them here and never runs scripts, stashes or
+        // removes the worktree.
+        let imported = self.store.import_source(&ws.id)?.is_some();
+        if path.exists() && !imported {
             if let Some(script) = self.config_for(&ws.repo_id, path).scripts.archive {
                 self.run_script(&ws, &repo.path, &script).await;
             }
@@ -575,6 +591,123 @@ impl Core {
         self.store.set_workspace_status(&ws.id, "archived")?;
         self.store.set_archived_at(&ws.id, Some(now()))?;
         Ok(())
+    }
+
+    // ---- Conductor import ----
+
+    /// Conductor worktrees on this machine, marking ones already imported.
+    /// Read-only: see `conductor.rs`.
+    pub async fn conductor_scan(&self) -> Result<conductor::Scan> {
+        let Some(paths) = conductor::Paths::for_user() else { return Ok(conductor::Scan::default()) };
+        self.conductor_scan_at(paths).await
+    }
+
+    pub async fn conductor_scan_at(&self, paths: conductor::Paths) -> Result<conductor::Scan> {
+        let mut scan = tokio::task::spawn_blocking(move || conductor::scan(&paths)).await?;
+        let imported = self.store.imported_workspaces(conductor::SOURCE)?;
+        for w in &mut scan.workspaces {
+            w.imported = match imported.get(&w.key) {
+                Some(id) => Some(id.clone()),
+                None => self.store.workspace_by_path(&w.path)?,
+            };
+        }
+        Ok(scan)
+    }
+
+    /// Import the chosen Conductor worktrees (by `key` from `conductor_scan`)
+    /// as Suneiro workspaces that point at the existing worktree. Already
+    /// imported ones are skipped, so running it again doesn't duplicate.
+    pub async fn conductor_import(&self, keys: &[String], history: bool) -> Result<conductor::ImportReport> {
+        let paths = conductor::Paths::for_user().ok_or_else(|| anyhow!("no home directory"))?;
+        self.conductor_import_at(paths, keys, history).await
+    }
+
+    pub async fn conductor_import_at(&self, paths: conductor::Paths, keys: &[String], history: bool) -> Result<conductor::ImportReport> {
+        let scan = self.conductor_scan_at(paths.clone()).await?;
+        let mut report = conductor::ImportReport::default();
+        let settings = self.settings();
+        for key in keys {
+            let skip = |reason: String| conductor::Skipped { key: key.clone(), reason };
+            let Some(cw) = scan.workspaces.iter().find(|w| &w.key == key) else {
+                report.skipped.push(skip("not a Conductor worktree (anymore)".into()));
+                continue;
+            };
+            if cw.imported.is_some() {
+                report.skipped.push(skip("already in Suneiro".into()));
+                continue;
+            }
+            let repo = match self.add_repo(&cw.repo_path).await {
+                Ok(r) => r,
+                Err(e) => {
+                    report.skipped.push(skip(format!("{e:#}")));
+                    continue;
+                }
+            };
+            // Conductor's database scripts become the repo's app settings,
+            // unless the repo already has scripts in Suneiro or a committed file.
+            if let Some(scripts) = scan.repo_scripts.get(&cw.repo_path) {
+                let mut config = self.repo_settings(&repo.id);
+                let empty = config.scripts.setup.is_none() && config.scripts.run.is_none() && config.scripts.archive.is_none();
+                if empty && load_file_config(Path::new(&repo.path)).is_none() {
+                    config.scripts = scripts.clone();
+                    self.save_repo_settings(&repo.id, &config)?;
+                    if !report.scripts_for.contains(&repo.name) {
+                        report.scripts_for.push(repo.name.clone());
+                    }
+                }
+            }
+            let ws = Workspace {
+                id: uuid::Uuid::new_v4().to_string(),
+                repo_id: repo.id.clone(),
+                name: cw.name.clone(),
+                branch: cw.branch.clone(),
+                base_branch: cw.base_branch.clone().unwrap_or_else(|| repo.default_branch.clone()),
+                path: cw.path.clone(),
+                status: "ready".into(),
+                created_at: cw.created_at.unwrap_or_else(now),
+                // Always set, so the first prompt doesn't rename the branch.
+                title: if cw.title.trim().is_empty() { cw.branch.clone() } else { cw.title.clone() },
+                archived_at: None,
+                unread: false,
+            };
+            let mut chats: Vec<(Session, Vec<Value>)> = Vec::new();
+            if let (true, Some(cid)) = (history && paths.db.is_file(), cw.conductor_id.clone()) {
+                let (db, ws_id) = (paths.db.clone(), ws.id.clone());
+                match tokio::task::spawn_blocking(move || conductor::load_chats(&db, &cid, &ws_id)).await? {
+                    Ok(list) => chats.extend(list.into_iter().filter(|c| self.agents.def(&c.session.agent_id).is_ok()).map(|c| (c.session, c.events))),
+                    Err(e) => log::warn!("conductor chats for {key}: {e:#}"),
+                }
+            }
+            // A workspace always has a chat: a fresh one with the default model.
+            let mut fresh = None;
+            if chats.is_empty() {
+                let first = settings.loadout.first();
+                let session = Session {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    workspace_id: ws.id.clone(),
+                    agent_id: first.map(|l| l.agent.clone()).unwrap_or_else(|| settings.default_agent.clone()),
+                    acp_session_id: None,
+                    title: String::new(),
+                    created_at: now(),
+                    model: first.map(|l| l.model.clone()),
+                    effort: first.and_then(|l| l.effort.clone()),
+                    parent_session_id: None,
+                };
+                fresh = Some(session.clone());
+                chats.push((session, Vec::new()));
+            }
+            if let Err(e) = self.store.import_workspace(&ws, conductor::SOURCE, key, &chats) {
+                report.skipped.push(skip(format!("{e:#}")));
+                continue;
+            }
+            for (s, _) in &chats {
+                let (model, effort) = if fresh.as_ref().is_some_and(|f| f.id == s.id) { (s.model.clone(), s.effort.clone()) } else { (None, None) };
+                let _ = self.agents.preset(&s.id, settings.plan_by_default, model, effort);
+            }
+            self.emitter.emit(Event::WorkspaceAdded { workspace: ws.clone() });
+            report.imported.push(ws);
+        }
+        Ok(report)
     }
 
     /// User-chosen title; replaces any auto-generated one.
