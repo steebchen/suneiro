@@ -81,6 +81,17 @@ async fn recent_projects(app: State<'_, App>) -> Res<Value> {
     serde_json::to_value(list).map_err(|e| e.to_string())
 }
 
+/// Conductor worktrees that can be imported (read-only scan).
+#[tauri::command]
+async fn conductor_scan(app: State<'_, App>) -> Res<suneiro_core::conductor::Scan> {
+    app.core.conductor_scan().await.map_err(err)
+}
+
+#[tauri::command]
+async fn conductor_import(app: State<'_, App>, keys: Vec<String>, history: bool) -> Res<suneiro_core::conductor::ImportReport> {
+    app.core.conductor_import(&keys, history).await.map_err(err)
+}
+
 #[tauri::command]
 async fn clone_repo(app: State<'_, App>, spec: String) -> Res<Repo> {
     app.core.clone_repo(&spec).await.map_err(err)
@@ -633,6 +644,8 @@ pub fn run() {
             remove_repo,
             reorder_repos,
             recent_projects,
+            conductor_scan,
+            conductor_import,
             clone_repo,
             list_workspaces,
             create_workspace,

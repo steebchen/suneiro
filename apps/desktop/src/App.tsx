@@ -17,6 +17,7 @@ import { AgentSetup, Settings } from "./components/Settings";
 import { Home } from "./components/Home";
 import { Insights } from "./components/Insights";
 import { NewWorkspaceDialog } from "./components/NewWorkspaceDialog";
+import { ConductorHint, ConductorImportDialog } from "./components/ConductorImport";
 import { Shortcuts } from "./components/Shortcuts";
 
 export async function pickRepo() {
@@ -52,6 +53,8 @@ function runCommand(id: string, setPalette: Toggle, setShortcuts?: Toggle) {
       if (repoId) void actions.createWorkspace(repoId);
       return;
     }
+    case "import-conductor":
+      return actions.openConductorImport();
     case "new-workspace-from": {
       const repoId = ws?.repoId ?? s.repos[0]?.id;
       if (repoId) actions.openNewFrom(repoId);
@@ -89,6 +92,7 @@ export function App() {
   const [palette, setPalette] = useState(false);
   const [shortcuts, setShortcuts] = useState(false);
   const newFromRepo = useStore((s) => s.newFromRepo);
+  const conductorImport = useStore((s) => s.conductorImport);
 
   useEffect(() => {
     void actions.init();
@@ -179,6 +183,7 @@ export function App() {
                 </button>
               )}
             />
+            <ConductorHint className="mt-4 w-full max-w-lg" />
             {!hasRepos && (
               <div className="mt-8 w-full max-w-lg">
                 <div className="mb-2 text-xs font-medium text-muted">Your agents</div>
@@ -195,6 +200,7 @@ export function App() {
       {palette && <CommandPalette onClose={() => setPalette(false)} onShortcuts={() => setShortcuts(true)} />}
       {shortcuts && <Shortcuts onClose={() => setShortcuts(false)} />}
       {newFromRepo && <NewWorkspaceDialog repoId={newFromRepo} onClose={() => actions.openNewFrom(null)} />}
+      {conductorImport && <ConductorImportDialog onClose={() => actions.openConductorImport(false)} />}
     </div>
   );
 }

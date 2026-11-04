@@ -5,6 +5,7 @@ import { prAppearance } from "../lib/pr";
 import { api, type Workspace } from "../lib/api";
 import { actions, useStore } from "../lib/store";
 import { ago } from "../lib/time";
+import { ConductorHint } from "./ConductorImport";
 
 type Filter = "active" | "archived" | "all";
 
@@ -101,6 +102,7 @@ export function Home() {
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-4xl px-6 py-6">
+          <ConductorHint className="mb-6" />
           {all === null ? (
             <div className="flex items-center gap-2 text-muted">
               <Loader2 size={13} className="animate-spin" /> Loading…

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api, type ChangedFile, type AgentDef, type AgentStatus, type Catalog, type LoadoutEntry, type ModelPrice, type PrStatus, type Settings, type Usage, type UpdateStatus, type ConfigOption, type CoreEvent, type PermissionOption, type Repo, type Session, type Workspace, type SessionCapabilities } from "./api";
+import { api, type ChangedFile, type AgentDef, type AgentStatus, type Catalog, type LoadoutEntry, type ModelPrice, type PrStatus, type Settings, type Usage, type UpdateStatus, type ConfigOption, type CoreEvent, type PermissionOption, type Repo, type Session, type Workspace, type SessionCapabilities, type ConductorScan } from "./api";
 import { applyEvents, emptyTranscript, type Transcript } from "./transcript";
 import { handleSupervisionEvents, loadInbox } from "./supervision";
 import { notifyOnce } from "./notifications";
@@ -98,6 +98,10 @@ type State = {
   update: UpdateStatus | null;
   /** version whose update toast the user dismissed (until the next launch) */
   updateDismissed: string | null;
+  /** Conductor worktrees on this machine (null until scanned) */
+  conductor: ConductorScan | null;
+  /** "Import from Conductor" dialog is open */
+  conductorImport: boolean;
 };
 
 export const useStore = create<State>(() => ({
@@ -127,6 +131,8 @@ export const useStore = create<State>(() => ({
   pricing: {},
   update: null,
   updateDismissed: null,
+  conductor: null,
+  conductorImport: false,
 }));
 
 const set = useStore.setState;
@@ -363,6 +369,7 @@ export const actions = {
     applyTheme(settings.theme);
     void actions.detectAgents().then(() => actions.ensureCatalogs());
     void actions.loadRecents();
+    void actions.loadConductor();
     void actions.loadUsage();
     void loadInbox().catch((e) => toast(String(e)));
     void api.updateStatus().then((update) => set({ update })).catch(() => {});
@@ -417,6 +424,43 @@ export const actions = {
   async loadRecents() {
     const recents = await api.recentProjects().catch(() => null);
     if (recents) set({ recents });
+  },
+
+  /** Look for Conductor worktrees (read-only; quiet when there are none). */
+  async loadConductor() {
+    const conductor = await api.conductorScan().catch(() => null);
+    if (conductor) set({ conductor });
+    return conductor;
+  },
+
+  openConductorImport(open = true) {
+    set({ conductorImport: open });
+    if (open) void actions.loadConductor();
+  },
+
+  /** Import Conductor worktrees as workspaces, then load them with their chats. */
+  async importConductor(keys: string[], history: boolean) {
+    const report = await guard(api.conductorImport(keys, history));
+    if (!report) return null;
+    const [repos, workspaces] = await Promise.all([api.listRepos(), api.listWorkspaces()]);
+    const ids = report.imported.map((w) => w.id);
+    const lists = await Promise.all(ids.map((id) => api.listSessions(id).catch(() => [] as Session[])));
+    const s = get();
+    const sessions = { ...s.sessions };
+    const selectedSession = { ...s.selectedSession };
+    const views = { ...s.views };
+    ids.forEach((id, i) => {
+      sessions[id] = lists[i];
+      if (lists[i].length) selectedSession[id] = lists[i][lists[i].length - 1].id;
+      // History is on disk: load it when the chat is opened.
+      for (const x of lists[i]) views[x.id] = newView(false);
+    });
+    set({ repos, workspaces, sessions, selectedSession, views });
+    ids.forEach((id, i) => scheduleDiffStats(id, 300 + i * 150));
+    void actions.loadConductor();
+    const n = report.imported.length;
+    if (n) toast(`Imported ${n} workspace${n === 1 ? "" : "s"} from Conductor`, "info");
+    return report;
   },
 
   async cloneRepo(spec: string) {

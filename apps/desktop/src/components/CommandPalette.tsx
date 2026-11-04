@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
-import { ArrowRight, ChartColumn, FolderPlus, GitBranch, House, Keyboard, ListChecks, Plus, Search, Settings as SettingsIcon } from "lucide-react";
+import { ArrowDownToLine, ArrowRight, ChartColumn, FolderPlus, GitBranch, House, Keyboard, ListChecks, Plus, Search, Settings as SettingsIcon } from "lucide-react";
 import { actions, useStore } from "../lib/store";
 import { AgentIcon, effortName, findModel, modelName } from "../lib/models";
 import { pickRepo } from "../App";
@@ -91,6 +91,9 @@ export function CommandPalette({ onClose, onShortcuts }: { onClose: () => void; 
       { id: "shortcuts", label: "Keyboard shortcuts", hint: "⌘/", icon: <Keyboard size={13} />, group: "Go to", run: onShortcuts },
       { id: "add-repo", label: "Add repository…", hint: "⇧⌘O", icon: <FolderPlus size={13} />, group: "Actions", run: () => void pickRepo() },
     );
+    if (s.conductor?.detected) {
+      out.push({ id: "import-conductor", label: "Import from Conductor…", icon: <ArrowDownToLine size={13} />, group: "Actions", run: () => actions.openConductorImport() });
+    }
     for (const r of s.recents) {
       out.push({
         id: `recent:${r.path}`,
