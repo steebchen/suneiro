@@ -25,3 +25,8 @@ tokio.workspace = true
 parking_lot.workspace = true
 log.workspace = true
 tauri-plugin-updater = "2"
+# Error reports (Rust panics, webview errors) to PostHog Error Tracking.
+# Release builds only, and only while Settings -> Send error reports is on.
+# See src/error_reports.rs.
+posthog-rs = "0.30"
+dirs.workspace = true

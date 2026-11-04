@@ -98,6 +98,7 @@ let settings = {
   editor: "Visual Studio Code",
   theme: "system",
   renameBranches: true,
+  errorReports: true,
   maxTabDepth: 4,
 };
 const config = [
@@ -230,6 +231,7 @@ const handlers: Record<string, (a: any) => any> = {
   session_events: (a) => structuredClone(sessionHistory(a.sessionId)),
   get_settings: () => settings,
   save_settings: (a) => void (settings = a.settings),
+  report_error: () => undefined,
   detect_agents: async () => {
     await sleep(400);
     return [
