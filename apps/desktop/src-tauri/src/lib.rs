@@ -17,6 +17,8 @@ mod delegation;
 
 mod updater;
 
+mod error_reports;
+
 type Res<T> = Result<T, String>;
 
 fn err(e: anyhow::Error) -> String {
@@ -496,7 +498,9 @@ fn get_settings(app: State<'_, App>) -> suneiro_core::setup::Settings {
 
 #[tauri::command]
 fn save_settings(app: State<'_, App>, settings: suneiro_core::setup::Settings) -> Res<()> {
-    app.core.save_settings(&settings).map_err(err)
+    app.core.save_settings(&settings).map_err(err)?;
+    error_reports::set_enabled(settings.error_reports);
+    Ok(())
 }
 
 #[tauri::command]
@@ -595,7 +599,21 @@ fn install_menu(app: &mut tauri::App) -> tauri::Result<()> {
 }
 
 pub fn run() {
-    let app = tauri::Builder::default()
+    let context = tauri::generate_context!();
+    error_reports::init(&context.config().identifier);
+    let builder = tauri::Builder::default();
+    // Report WebKit content-process crashes. This replaces Tauri's default
+    // handler, which reloads the webview, so reload it here too.
+    #[cfg(target_os = "macos")]
+    let builder = if error_reports::active() {
+        builder.on_web_content_process_terminate(|webview| {
+            error_reports::webview_terminated(webview.label());
+            let _ = webview.reload();
+        })
+    } else {
+        builder
+    };
+    let app = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -709,13 +727,15 @@ pub fn run() {
             create_child_session,
             create_sibling_session,
             detach_session,
+            error_reports::report_error,
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application");
 
     app.run(|handle, event| {
         if let RunEvent::Exit = event {
             handle.state::<App>().core.shutdown();
+            error_reports::shutdown();
         }
     });
 }

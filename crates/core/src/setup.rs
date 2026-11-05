@@ -39,6 +39,9 @@ pub struct Settings {
     pub rename_branches: bool,
     /// Maximum parent links for a chat; roots have depth zero (1..=8).
     pub max_tab_depth: u8,
+    /// Send error reports (panics and uncaught UI errors; no prompts, chats or
+    /// files) to the Suneiro developers. Only release builds send anything.
+    pub error_reports: bool,
 }
 
 impl Default for Settings {
@@ -55,8 +58,27 @@ impl Default for Settings {
             theme: "system".into(),
             rename_branches: true,
             max_tab_depth: 4,
+            error_reports: true,
         }
     }
+}
+
+/// Settings saved under the app data directory, read without creating or
+/// migrating the database: startup code (error reporting) runs before `Core`.
+/// A missing or unreadable database yields the defaults.
+pub fn saved_settings(preferred_data_dir: &std::path::Path) -> Settings {
+    use rusqlite::{Connection, OpenFlags, OptionalExtension};
+    let path = crate::storage::database_path(&crate::storage::data_dir(preferred_data_dir));
+    let read = || -> Option<Settings> {
+        let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
+        conn.busy_timeout(std::time::Duration::from_secs(2)).ok()?;
+        let json: String = conn
+            .query_row("SELECT value FROM settings WHERE key = 'settings'", [], |r| r.get(0))
+            .optional()
+            .ok()??;
+        serde_json::from_str(&json).ok()
+    };
+    read().unwrap_or_default()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -251,6 +273,21 @@ mod tests {
         let s: Settings = serde_json::from_str(r#"{"defaultAgent":"codex"}"#).unwrap();
         assert_eq!(s.default_agent, "codex");
         assert_eq!(s.branch_prefix, "suneiro/");
+        assert!(s.error_reports, "existing installs keep error reports on");
+    }
+
+    #[test]
+    fn saved_settings_are_read_without_creating_a_database() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("com.suneiro.desktop");
+        assert!(saved_settings(&dir).error_reports);
+        assert!(!dir.exists(), "reading must not create the data directory");
+
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = crate::store::Store::open(&dir.join("suneiro.sqlite")).unwrap();
+        let off = Settings { error_reports: false, ..Settings::default() };
+        store.set_setting("settings", &serde_json::to_string(&off).unwrap()).unwrap();
+        assert!(!saved_settings(&dir).error_reports);
     }
 
     #[tokio::test]

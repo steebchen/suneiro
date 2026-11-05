@@ -78,6 +78,10 @@ When Conductor is installed, Suneiro offers **Import from Conductor** (first-run
 
 Conductor's data is only ever read: its database is opened read-only and `immutable`, worktrees are inspected through their files without running git, and archiving an imported workspace in Suneiro only hides it, leaving the worktree in place. Details and limits: [docs/conductor-import.md](docs/conductor-import.md).
 
+## Error reports
+
+Release builds send error reports to the Suneiro developers through [PostHog Error Tracking](https://posthog.com/error-tracking): Rust panics, uncaught UI errors and webview crashes, with the stack trace, app version and OS. Reports are anonymous (no account or install ID, no IP-based location), mask your home folder, and never include prompts, chats, code or files. Turn them off in Settings → Privacy. Details: [docs/ERROR_REPORTS.md](docs/ERROR_REPORTS.md).
+
 ## Upgrading from Runner
 
 Suneiro reuses an existing Runner database and attachments in place, keeping saved repositories, sessions, settings and workspace paths. New installations use `com.suneiro.desktop` / `suneiro.sqlite`, with workspaces under `~/suneiro/workspaces` and a `suneiro/` branch prefix. Existing custom settings are preserved. Checkpoint refs and archive keys retain their internal legacy namespace for compatibility.
