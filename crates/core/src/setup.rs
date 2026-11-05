@@ -19,6 +19,14 @@ pub struct LoadoutEntry {
     pub effort: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChatTabLayout {
+    #[default]
+    Horizontal,
+    Tree,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Settings {
@@ -42,6 +50,8 @@ pub struct Settings {
     /// Send error reports (panics and uncaught UI errors; no prompts, chats or
     /// files) to the Suneiro developers. Only release builds send anything.
     pub error_reports: bool,
+    /// Horizontal chat tabs by default; the original tree remains optional.
+    pub chat_tab_layout: ChatTabLayout,
 }
 
 impl Default for Settings {
@@ -59,6 +69,7 @@ impl Default for Settings {
             rename_branches: true,
             max_tab_depth: 4,
             error_reports: true,
+            chat_tab_layout: ChatTabLayout::Horizontal,
         }
     }
 }

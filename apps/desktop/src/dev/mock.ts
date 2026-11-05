@@ -100,6 +100,7 @@ let settings = {
   renameBranches: true,
   errorReports: true,
   maxTabDepth: 4,
+  chatTabLayout: new URLSearchParams(location.search).get("tabs") === "tree" ? "tree" : "horizontal",
 };
 const config = [
   { id: "mode", name: "Mode", category: "mode", type: "select", currentValue: "bypassPermissions", options: [{ value: "default", name: "Manual" }, { value: "plan", name: "Plan" }, { value: "bypassPermissions", name: "Bypass permissions" }] },

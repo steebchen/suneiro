@@ -34,7 +34,7 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
   const failed = useStore((s) => s.workspaces.find((w) => w.id === workspaceId)?.status === "failed");
   const editor = useStore((s) => s.settings?.editor);
   const sessionTitle = useStore((s) => (s.sessions[workspaceId] ?? []).find((x) => x.title)?.title ?? "");
-  const [panel, setPanel] = useState(true);
+  const [panel, setPanel] = useState(false);
   const [tab, setTab] = useState<Tab>("changes");
   useEffect(() => {
     if (failed) setTab("setup");
@@ -52,7 +52,7 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex h-13 shrink-0 items-center gap-2 border-b border-border px-3" data-tauri-drag-region>
         <div className="flex min-w-0 items-center gap-2" data-tauri-drag-region>
-          <span className="font-medium">{ws.title || sessionTitle || ws.name}</span>
+          <span className="max-w-64 truncate font-medium" title={ws.title || sessionTitle || ws.name}>{ws.title || sessionTitle || ws.name}</span>
           <span className="flex items-center gap-1 truncate text-xs text-muted" data-tauri-drag-region>
             <GitBranch size={11} /> {ws.branch} → {ws.baseBranch}
           </span>
@@ -82,7 +82,10 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
           <Archive size={14} />
         </button>
         <button
-          title="Toggle panel"
+          title={panel ? "Hide changes and terminal" : "Show changes and terminal"}
+            aria-label={panel ? "Hide changes and terminal" : "Show changes and terminal"}
+            aria-expanded={panel}
+            aria-controls="workspace-details"
           onClick={() => setPanel((p) => !p)}
           className={clsx("rounded p-1.5 hover:bg-hover", panel ? "text-fg" : "text-muted")}
         >
@@ -104,7 +107,8 @@ export function WorkspaceView({ workspaceId }: { workspaceId: string }) {
         </section>
         {panel && (
           <section
-            ref={panelSize.ref as React.RefObject<HTMLElement>}
+            id="workspace-details"
+              ref={panelSize.ref as React.RefObject<HTMLElement>}
             style={{ width: panelSize.width }}
             className="relative flex max-w-[65%] shrink-0 flex-col border-l border-border bg-panel"
           >

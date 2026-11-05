@@ -23,12 +23,15 @@ pub fn quick_title(text: &str) -> String {
         .iter()
         .position(|w| !FILLER.contains(&w.to_lowercase().trim_matches(|c: char| !c.is_alphanumeric() && c != '\'')))
         .unwrap_or(0);
-    let mut picked: Vec<&str> = words[start..].iter().take(5).copied().collect();
+    let mut picked: Vec<&str> = words[start..].iter().take(4).copied().collect();
     const DANGLING: &[&str] = &["to", "the", "a", "an", "and", "of", "for", "in", "on", "with", "our", "my", "that"];
     while picked.len() > 1 && picked.last().is_some_and(|w| DANGLING.contains(&w.to_lowercase().as_str())) {
         picked.pop();
     }
-    let mut title = picked.join(" ");
+    while picked.len() > 1 && picked.join(" ").chars().count() > 40 {
+        picked.pop();
+    }
+    let mut title: String = picked.join(" ").chars().take(40).collect();
     title = title.trim_end_matches(|c: char| !c.is_alphanumeric()).to_string();
     capitalize(&title)
 }
@@ -58,9 +61,9 @@ fn clean(summary: &str) -> Option<String> {
     }
     let line = line.trim_matches(|c: char| c == '"' || c == '\'' || c == '`' || c == '*' || c == '.');
     let line = line.strip_prefix("Title:").unwrap_or(line).trim();
-    let words: Vec<&str> = line.split_whitespace().take(6).collect();
+    let words: Vec<&str> = line.split_whitespace().take(4).collect();
     let title = capitalize(&words.join(" "));
-    (!title.is_empty() && title.len() <= 60).then_some(title)
+    (!title.is_empty() && title.chars().count() <= 40).then_some(title)
 }
 
 /// Ask Claude Haiku for a 2–4 word title. `None` if Claude isn't installed,
@@ -71,7 +74,7 @@ pub async fn summarize(text: &str) -> Option<String> {
     }
     let excerpt: String = text.chars().take(2000).collect();
     let prompt = format!(
-        "Write a 2-4 word title for this message, for a sidebar list of tasks.\n\
+        "Write a 2-4 word title, under 40 characters, for a compact task tab.\n\
          - A coding task: imperative form, like \"Add dark mode\" or \"Fix login bug\".\n\
          - A question or anything else: name its topic, like \"Question about billing\" or \"Explain auth flow\".\n\
          - If there's nothing to summarize: \"Question\".\n\
@@ -166,6 +169,8 @@ mod tests {
         assert_eq!(quick_title("add dark mode support to the settings page"), "Add dark mode support");
         assert_eq!(quick_title("\n\nfix the bug."), "Fix the bug");
         assert_eq!(quick_title(""), "");
+        assert_eq!(quick_title("Investigate authentication middleware authorization configuration"), "Investigate authentication middleware");
+        assert_eq!(quick_title(&"界".repeat(80)).chars().count(), 40);
     }
 
     #[test]
@@ -182,6 +187,8 @@ mod tests {
         assert_eq!(clean("\"Add API rate limiting.\"\n").as_deref(), Some("Add API rate limiting"));
         assert_eq!(clean("Title: fix flaky test").as_deref(), Some("Fix flaky test"));
         assert_eq!(clean("   "), None);
+        assert_eq!(clean("Add comprehensive API rate limiting").as_deref(), Some("Add comprehensive API rate"));
+        assert_eq!(clean(&"界".repeat(41)), None);
         assert_eq!(clean("This isn't a coding task — it's a question"), None);
         assert_eq!(clean("Sorry, I can't title that"), None);
         assert_eq!(clean("Question about billing").as_deref(), Some("Question about billing"));

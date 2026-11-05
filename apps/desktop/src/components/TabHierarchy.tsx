@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import clsx from "clsx";
 import { ChevronDown, ChevronRight, GitPullRequest, Plus, Unlink, X } from "lucide-react";
-import type { Session } from "../lib/api";
+import type { Session, Workspace } from "../lib/api";
 import { actions, useStore } from "../lib/store";
 import { AgentIcon } from "../lib/models";
 import { Menu } from "./Menu";
@@ -83,6 +83,7 @@ export const TabHierarchy = memo(function TabHierarchy({ workspaceId, activeId }
   const lists = useStore((s) => s.sessions) ?? EMPTY;
   const workspaces = useStore((s) => s.workspaces);
   const maxDepth = useStore((s) => s.settings?.maxTabDepth ?? 4);
+  const horizontal = useStore((s) => s.settings?.chatTabLayout !== "tree");
   const pr = useStore((s) => s.prs[workspaceId]);
   const tree = useMemo(() => buildTree(lists, workspaceId), [lists, workspaceId]);
   const [collapsed, setCollapsed] = useState(readCollapsed);
@@ -165,8 +166,18 @@ export const TabHierarchy = memo(function TabHierarchy({ workspaceId, activeId }
     e.preventDefault();
     buttons[next]?.focus();
   };
+  const strip = (ids: string[], label: string, selectedId?: string) => (
+    <ChatTabStrip
+      label={label}
+      nodes={ids.map((id) => tree.nodes.get(id)!)}
+      selectedId={selectedId}
+      workspaceId={workspaceId}
+      lists={lists}
+      workspaces={workspaces}
+    />
+  );
   return (
-    <div className="shrink-0 border-b border-border bg-panel">
+    <div className="min-w-0 shrink-0 border-b border-border bg-panel">
       <div className="flex min-h-9 items-center gap-1 px-2">
         {pr && (
           <button
@@ -179,30 +190,34 @@ export const TabHierarchy = memo(function TabHierarchy({ workspaceId, activeId }
             <GitPullRequest size={12} className={prAppearance(pr).color} /> PR #{pr.number}
           </button>
         )}
-        <nav
-          ref={breadcrumbRef}
-          data-chat-navigation
-          aria-label="Chat breadcrumb"
-          className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto text-xs text-muted"
-        >
-          {path.map((s, i) => (
-            <span key={s.id} className="flex min-w-0 shrink-0 items-center gap-1">
-              {i > 0 && <ChevronRight size={11} />}
-              <button
-                onClick={() => navigate(s)}
-                aria-current={s.id === activeId ? "page" : undefined}
-                className="max-w-40 truncate rounded px-1 py-1 hover:bg-hover hover:text-fg"
-              >
-                {s.title || "New chat"}
-              </button>
-            </span>
-          ))}
-        </nav>
+        {horizontal ? (
+          strip(tree.roots, "Root chats", path[0]?.id)
+        ) : (
+          <nav
+            ref={breadcrumbRef}
+            data-chat-navigation
+            aria-label="Chat breadcrumb"
+            className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto text-xs text-muted"
+          >
+            {path.map((s, i) => (
+              <span key={s.id} className="flex min-w-0 shrink-0 items-center gap-1">
+                {i > 0 && <ChevronRight size={11} />}
+                <button
+                  onClick={() => navigate(s)}
+                  aria-current={s.id === activeId ? "page" : undefined}
+                  className="max-w-40 truncate rounded px-1 py-1 hover:bg-hover hover:text-fg"
+                >
+                  {s.title || "New chat"}
+                </button>
+              </span>
+            ))}
+          </nav>
+        )}
         <button
           aria-label="New root chat"
           title="New root chat (⌘T)"
           onClick={() => void actions.newChat(workspaceId)}
-          className="rounded p-1 text-muted hover:bg-hover hover:text-fg"
+          className="shrink-0 rounded p-1 text-muted hover:bg-hover hover:text-fg"
         >
           <Plus size={14} />
         </button>
@@ -240,32 +255,38 @@ export const TabHierarchy = memo(function TabHierarchy({ workspaceId, activeId }
           />
         )}
       </div>
-      <div
-        ref={ref}
-        data-chat-navigation
-        role="tree"
-        aria-label="Chat hierarchy"
-        onKeyDown={onKeyDown}
-        className="max-h-44 overflow-y-auto px-2 pb-1"
-      >
-        {visible.map((node) => (
-          <HierarchyRow
-            key={node.session.id}
-            node={node}
-            active={node.session.id === activeId}
-            collapsed={collapsed.has(node.session.id)}
-            onToggle={toggle}
-            workspaceLabel={
-              node.session.workspaceId !== workspaceId ? workspaces.find((w) => w.id === node.session.workspaceId)?.name : undefined
-            }
-            closable={(lists[node.session.workspaceId]?.length ?? 0) > 1}
-          />
-        ))}
-      </div>
-      {active && !canCreateChild && (
-        <div className="px-3 pb-1 text-[11px] text-muted">
-          Maximum child depth ({maxDepth}) reached. Create a sibling or detach this chat.
+      {horizontal ? (
+        path.map((parent, index) => {
+          const children = tree.nodes.get(parent.id)?.children ?? [];
+          return (
+            children.length > 0 && (
+              <div key={parent.id} className="flex min-w-0 items-center gap-2 border-t border-border px-2">
+                <span title={parent.title || "New chat"} className="flex max-w-28 shrink-0 items-center gap-1 text-[10px] text-muted">
+                  <ChevronRight size={11} className="shrink-0" />
+                  <span className="truncate">{parent.title || "New chat"}</span>
+                </span>
+                {strip(children, `Chats under ${parent.title || "New chat"}`, path[index + 1]?.id)}
+              </div>
+            )
+          );
+        })
+      ) : (
+        <div ref={ref} data-chat-navigation role="tree" aria-label="Chat hierarchy" onKeyDown={onKeyDown} className="max-h-44 overflow-y-auto px-2 pb-1">
+          {visible.map((node) => (
+            <HierarchyRow
+              key={node.session.id}
+              node={node}
+              active={node.session.id === activeId}
+              collapsed={collapsed.has(node.session.id)}
+              onToggle={toggle}
+              workspaceLabel={node.session.workspaceId !== workspaceId ? workspaces.find((w) => w.id === node.session.workspaceId)?.name : undefined}
+              closable={(lists[node.session.workspaceId]?.length ?? 0) > 1}
+            />
+          ))}
         </div>
+      )}
+      {active && !canCreateChild && (
+        <div className="px-3 pb-1 text-[11px] text-muted">Maximum child depth ({maxDepth}) reached. Create a sibling or detach this chat.</div>
       )}
     </div>
   );
@@ -278,6 +299,8 @@ const HierarchyRow = memo(function HierarchyRow({
   onToggle,
   workspaceLabel,
   closable,
+  horizontal = false,
+  focusable = true,
 }: {
   node: Node;
   active: boolean;
@@ -285,6 +308,8 @@ const HierarchyRow = memo(function HierarchyRow({
   onToggle: (id: string) => void;
   workspaceLabel?: string;
   closable: boolean;
+  horizontal?: boolean;
+  focusable?: boolean;
 }) {
   const { session, children, descendants, depth } = node;
   const status = useStore((s) => {
@@ -305,24 +330,35 @@ const HierarchyRow = memo(function HierarchyRow({
     if (active) rowRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }, [active]);
   return (
-    <div role="none" className="group flex items-center gap-1" style={{ paddingLeft: Math.min(depth, 8) * 14 }}>
-      {children.length ? (
-        <button
-          aria-label={`${collapsed ? "Expand" : "Collapse"} children of ${session.title || "New chat"}`}
-          onClick={() => onToggle(session.id)}
-          className="shrink-0 rounded p-0.5 text-muted hover:bg-hover"
-        >
-          {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
-        </button>
-      ) : (
-        <span className="w-4 shrink-0" />
+    <div
+      role="none"
+      className={clsx(
+        "group flex items-center gap-1",
+        horizontal && "w-44 max-w-48 shrink-0 border-b-2",
+        horizontal && (active ? "border-accent" : "border-transparent"),
       )}
+      style={horizontal ? undefined : { paddingLeft: Math.min(depth, 8) * 14 }}
+    >
+      {!horizontal &&
+        (children.length ? (
+          <button
+            aria-label={`${collapsed ? "Expand" : "Collapse"} children of ${session.title || "New chat"}`}
+            onClick={() => onToggle(session.id)}
+            className="shrink-0 rounded p-0.5 text-muted hover:bg-hover"
+          >
+            {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+          </button>
+        ) : (
+          <span className="w-4 shrink-0" />
+        ))}
       <button
         ref={rowRef}
         data-session-id={session.id}
-        role="treeitem"
-        aria-level={depth + 1}
-        aria-expanded={children.length ? !collapsed : undefined}
+        role={horizontal ? "tab" : "treeitem"}
+        title={`${session.title || "New chat"}${workspaceLabel ? ` · ${workspaceLabel}` : ""}`}
+        tabIndex={horizontal && !focusable ? -1 : 0}
+        aria-level={horizontal ? undefined : depth + 1}
+        aria-expanded={!horizontal && children.length ? !collapsed : undefined}
         aria-selected={active}
         onClick={() => navigate(session)}
         className={clsx(
@@ -332,21 +368,15 @@ const HierarchyRow = memo(function HierarchyRow({
       >
         <AgentIcon agent={session.agentId} size={12} />
         <span className="truncate">{session.title || "New chat"}</span>
-        {workspaceLabel && <span className="shrink-0 text-[10px] text-muted">· {workspaceLabel}</span>}
-        {collapsed && children.length > 0 && <span className="text-[10px] text-muted">{descendants.length - 1}</span>}
+        {workspaceLabel && !horizontal && <span className="shrink-0 text-[10px] text-muted">· {workspaceLabel}</span>}
+        {!horizontal && collapsed && children.length > 0 && <span className="text-[10px] text-muted">{descendants.length - 1}</span>}
         {status && (
           <span
             aria-label={status}
             title={`${status}${descendants.length > 1 ? " in this chat or its children" : ""}`}
             className={clsx(
               "ml-auto h-1.5 w-1.5 shrink-0 rounded-full",
-              status === "needs input"
-                ? "bg-warn"
-                : status === "error"
-                  ? "bg-del-fg"
-                  : status === "running"
-                    ? "pulse bg-accent"
-                    : "bg-add-fg",
+              status === "needs input" ? "bg-warn" : status === "error" ? "bg-del-fg" : status === "running" ? "pulse bg-accent" : "bg-add-fg",
             )}
           />
         )}
@@ -356,7 +386,7 @@ const HierarchyRow = memo(function HierarchyRow({
           title="Detach chat (keep this chat and its children)"
           aria-label={`Detach ${session.title || "New chat"}`}
           onClick={() => void actions.detachSession(session.id)}
-          className="invisible rounded p-1 text-muted hover:bg-hover group-hover:visible group-focus-within:visible"
+          className="invisible shrink-0 rounded p-1 text-muted hover:bg-hover group-hover:visible group-focus-within:visible"
         >
           <Unlink size={11} />
         </button>
@@ -366,7 +396,7 @@ const HierarchyRow = memo(function HierarchyRow({
           title="Close this chat only; children become root chats"
           aria-label={`Close ${session.title || "New chat"}`}
           onClick={() => void actions.closeSession(session.workspaceId, session.id)}
-          className="invisible rounded p-1 text-muted hover:bg-hover group-hover:visible group-focus-within:visible"
+          className="invisible shrink-0 rounded p-1 text-muted hover:bg-hover group-hover:visible group-focus-within:visible"
         >
           <X size={11} />
         </button>
@@ -374,3 +404,68 @@ const HierarchyRow = memo(function HierarchyRow({
     </div>
   );
 });
+function ChatTabStrip({
+  label,
+  nodes,
+  selectedId,
+  workspaceId,
+  lists,
+  workspaces,
+}: {
+  label: string;
+  nodes: Node[];
+  selectedId?: string;
+  workspaceId: string;
+  lists: Record<string, Session[]>;
+  workspaces: Workspace[];
+}) {
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!(event.target instanceof HTMLElement) || event.target.getAttribute("role") !== "tab") return;
+    const tabs = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+    const index = tabs.indexOf(event.target as HTMLButtonElement);
+    let next: number;
+    switch (event.key) {
+      case "ArrowRight":
+        next = (index + 1) % tabs.length;
+        break;
+      case "ArrowLeft":
+        next = (index - 1 + tabs.length) % tabs.length;
+        break;
+      case "Home":
+        next = 0;
+        break;
+      case "End":
+        next = tabs.length - 1;
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    tabs[next]?.focus();
+    tabs[next]?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  };
+  return (
+    <div
+      role="tablist"
+      aria-label={label}
+      aria-orientation="horizontal"
+      data-chat-navigation
+      onKeyDown={onKeyDown}
+      className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+    >
+      {nodes.map((node, index) => (
+        <HierarchyRow
+          key={node.session.id}
+          node={node}
+          active={node.session.id === selectedId}
+          horizontal
+          focusable={node.session.id === selectedId || (!selectedId && index === 0)}
+          collapsed={false}
+          onToggle={() => {}}
+          workspaceLabel={node.session.workspaceId !== workspaceId ? workspaces.find((w) => w.id === node.session.workspaceId)?.name : undefined}
+          closable={(lists[node.session.workspaceId]?.length ?? 0) > 1}
+        />
+      ))}
+    </div>
+  );
+}

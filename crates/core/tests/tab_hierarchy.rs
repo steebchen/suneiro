@@ -112,6 +112,8 @@ fn closing_parent_detaches_children_not_grandchildren_and_keeps_last_chat() {
 fn settings_default_is_compatible_and_bounded() {
     let settings: suneiro_core::setup::Settings = serde_json::from_str("{}").unwrap();
     assert_eq!(settings.max_tab_depth, 4);
+    assert_eq!(settings.chat_tab_layout, suneiro_core::setup::ChatTabLayout::Horizontal);
+    assert!(serde_json::from_str::<suneiro_core::setup::Settings>(r#"{"chatTabLayout":"unknown"}"#).is_err());
     let dir = tempfile::tempdir().unwrap();
     let core = suneiro_core::Core::new(dir.path(), std::sync::Arc::new(|_| {})).unwrap();
     let mut settings = core.settings();
@@ -122,4 +124,10 @@ fn settings_default_is_compatible_and_bounded() {
     settings.max_tab_depth = 8;
     core.save_settings(&settings).unwrap();
     assert_eq!(core.settings().max_tab_depth, 8);
+    settings.chat_tab_layout = suneiro_core::setup::ChatTabLayout::Tree;
+    core.save_settings(&settings).unwrap();
+    drop(core);
+    let reopened = suneiro_core::Core::new(dir.path(), std::sync::Arc::new(|_| {})).unwrap();
+    assert_eq!(reopened.settings().chat_tab_layout, suneiro_core::setup::ChatTabLayout::Tree);
+    assert_eq!(serde_json::to_value(reopened.settings()).unwrap()["chatTabLayout"], "tree");
 }
