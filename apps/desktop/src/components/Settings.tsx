@@ -42,6 +42,13 @@ export function Settings() {
             </Field>
           </Section>
           <Section title="Related chats">
+              <Field label="Chat tab layout" hint="Horizontal tabs keep chat wide. Related chats appear in a row below their parent; choose Vertical tree for the previous layout.">
+                <Segmented<SettingsT["chatTabLayout"]>
+                  value={settings.chatTabLayout ?? "horizontal"}
+                  options={[["horizontal", "Horizontal tabs"], ["tree", "Vertical tree"]]}
+                  onChange={(chatTabLayout) => actions.saveSettings({ chatTabLayout })}
+                />
+              </Field>
             <Field label="Related chat levels" hint="Choose how many levels of related chats you can add. Lowering this keeps existing chats. Closing a chat keeps its related chats.">
               <select aria-label="Related chat levels" value={settings.maxTabDepth} onChange={(e) => void actions.saveSettings({ maxTabDepth: Number(e.target.value) })} className="rounded-md border border-border bg-bg px-2 py-1.5 text-xs">
                 {Array.from({ length: 8 }, (_, i) => i + 1).map((depth) => <option key={depth} value={depth}>{depth}</option>)}

@@ -104,6 +104,7 @@ export type Settings = {
   /** Send panics and uncaught UI errors (no prompts, chats or files) to the developers. */
   errorReports: boolean;
   maxTabDepth: number;
+  chatTabLayout: "horizontal" | "tree";
 };
 
 export type AgentStatus = {

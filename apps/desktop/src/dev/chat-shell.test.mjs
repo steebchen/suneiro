@@ -17,7 +17,16 @@ test("workspace opens directly into chat and related tabs with changes and termi
 
 test("human diff review keeps viewed marks, line comments, chat drafts and virtualized diffs", () => {
   const changes = component("ChangesPanel");
-  for (const text of ["useViewed", "useVirtualizer", "Comment on this line", "Mark as viewed (V)", "actions.appendDraft", "onClick={sendComments}", "api.revertFile", "onComment="]) {
+  for (const text of [
+    "useViewed",
+    "useVirtualizer",
+    "Comment on this line",
+    "Mark as viewed (V)",
+    "actions.appendDraft",
+    "onClick={sendComments}",
+    "api.revertFile",
+    "onComment=",
+  ]) {
     assert.ok(changes.includes(text), `missing human review affordance: ${text}`);
   }
   assert.doesNotMatch(changes, /Reviewer agent|Review selected files|startReview|verificationTask|reviewFiles|Send findings as new task/);
@@ -72,4 +81,19 @@ test("explicit allow replies clears only pause and spend limits, retaining other
   assert.match(notice, /allowRepliesControls\(await api\.repoControls\(repoId\)\)/);
   assert.match(notice, /onClick=\{\(\) => void allowReplies\(\)\}/);
   assert.doesNotMatch(notice.slice(notice.indexOf("useEffect(()"), notice.indexOf("if (!replyLimitsActive")), /saveRepoControls/);
+});
+
+test("chat-first layout starts wide and retains the optional hierarchy tree", () => {
+  const workspace = component("WorkspaceView");
+  assert.match(workspace, /const \[panel, setPanel\] = useState\(false\)/);
+  assert.match(workspace, /aria-expanded=\{panel\}/);
+  assert.match(workspace, /Show changes and terminal/);
+  const tabs = component("TabHierarchy");
+  assert.match(tabs, /settings\?\.chatTabLayout !== "tree"/);
+  assert.match(tabs, /role="tablist"/);
+  assert.match(tabs, /overflow-x-auto/);
+  assert.match(tabs, /path\.map\(\(parent, index\)/);
+  assert.match(tabs, /w-44 max-w-48 shrink-0/);
+  assert.match(tabs, /role="tree"/);
+  assert.match(component("Settings"), /actions\.saveSettings\(\{ chatTabLayout \}\)/);
 });

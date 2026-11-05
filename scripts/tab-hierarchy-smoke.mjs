@@ -5,6 +5,7 @@ const { chromium } = await import(process.env.PLAYWRIGHT_MODULE ?? "playwright")
 const browser = await chromium.launch({ headless: true });
 const output = process.env.SUNEIRO_SCREENSHOTS ?? "/tmp/suneiro-tab-hierarchy";
 const url = new URL(process.env.SUNEIRO_UI_URL ?? "http://127.0.0.1:5145");
+url.searchParams.set("tabs", "tree");
 url.searchParams.set("hierarchy", "");
 await mkdir(output, { recursive: true });
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, colorScheme: "light" });
