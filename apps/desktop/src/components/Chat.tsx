@@ -15,6 +15,7 @@ import { ModelPicker, cycleEffort, toggleFast } from "./ModelPicker";
 import { effortOption, fastOption, modelOption } from "../lib/models";
 import { mentionAt, rankFiles, workspaceFiles } from "../lib/mentions";
 import { DelegationPanel } from "./DelegationPanel";
+import { AgentError } from "./AgentError";
 
 export function Chat({ sessionId, workspaceId }: { sessionId: string; workspaceId: string }) {
   const items = useStore((s) => s.views[sessionId]?.transcript.items) ?? EMPTY;
@@ -298,9 +299,7 @@ const Row = memo(function Row({ item, sessionId }: { item: Item; sessionId: stri
     }
     case "error":
       return (
-        <div className="selectable my-2 rounded-md border border-del-fg/30 bg-del-bg px-3 py-2 font-mono text-xs whitespace-pre-wrap text-del-fg">
-          {item.text}
-        </div>
+        <SessionError sessionId={sessionId} text={item.text} />
       );
   }
 });
@@ -922,4 +921,8 @@ function ConfigControl({ sessionId, option }: { sessionId: string; option: Confi
       </select>
     </label>
   );
+}
+function SessionError({ sessionId, text }: { sessionId: string; text: string }) {
+  const agentId = useStore((s) => Object.values(s.sessions).flat().find((session) => session.id === sessionId)?.agentId);
+  return <AgentError text={text} agentId={agentId} cloud={false} onOpenSettings={() => actions.openSettings(true)} />;
 }
