@@ -5,11 +5,13 @@ import { Check, CircleAlert, Loader2, RefreshCw, X } from "lucide-react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { api, type AgentStatus, type Settings as SettingsT } from "../lib/api";
-import { actions, useStore } from "../lib/store";
+import { actions, useStore, toast } from "../lib/store";
 import { followTheme, xtermTheme } from "../lib/xtermTheme";
 import { AgentIcon } from "../lib/models";
 import { ModelSettings } from "./ModelSettings";
 import { RepoSettings } from "./RepoSettings";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import { openUrl } from "@tauri-apps/plugin-opener";
 
 export function Settings() {
   const settings = useStore((s) => s.settings);
@@ -234,7 +236,12 @@ function SetupTerminal({ title, command, onClose }: { title: string; command: st
   const [done, setDone] = useState(false);
 
   useEffect(() => {
+    const openLink = (_event: MouseEvent, uri: string) => {
+      if (!/^https?:\/\//i.test(uri)) return;
+      void openUrl(uri).catch(() => toast("Could not open sign-in link. Copy it into your browser or try again."));
+    };
     const term = new Terminal({
+      linkHandler: { activate: openLink },
       fontFamily: '"SF Mono", ui-monospace, Menlo, monospace',
       fontSize: 11.5,
       rows: 14,
@@ -243,6 +250,7 @@ function SetupTerminal({ title, command, onClose }: { title: string; command: st
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    term.loadAddon(new WebLinksAddon(openLink));
     const unfollow = followTheme(term);
     term.open(ref.current!);
     fit.fit();
