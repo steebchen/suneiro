@@ -176,7 +176,7 @@ function UpdateButton() {
   return (
     <button
       onClick={() => useStore.setState({ updateDismissed: null })}
-      disabled={queued}
+      disabled={queued && dismissed !== update.version}
       title={queued ? `Suneiro ${update.version} installs once agents finish` : `Suneiro ${update.version} is available`}
       className="mb-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-accent hover:bg-hover disabled:hover:bg-transparent"
     >

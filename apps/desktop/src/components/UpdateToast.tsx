@@ -35,7 +35,7 @@ export function UpdateToast() {
   const dismissed = useStore((s) => s.updateDismissed);
   if (!update?.version || update.phase === "none") return null;
   const { version, phase } = update;
-  if (phase === "available" && dismissed === version) return null;
+  if (dismissed === version) return null;
 
   if (update.automatic) {
     return (
@@ -85,6 +85,9 @@ export function UpdateToast() {
         <div className="mt-3 flex items-center justify-end gap-1">
           <button className={`${button} mr-auto text-muted`} onClick={() => void api.cancelUpdate()}>
             Cancel
+          </button>
+          <button className={button} onClick={() => useStore.setState({ updateDismissed: version })}>
+            Hide
           </button>
           <button className={primary} onClick={() => void restartNow(version)}>
             Restart now

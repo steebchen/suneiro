@@ -8,6 +8,7 @@
     "build": "vite build",
     "build:release": "vite build --sourcemap && node ../../scripts/posthog-symbols.mjs sourcemaps dist",
     "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
