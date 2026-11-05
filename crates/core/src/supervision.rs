@@ -149,12 +149,11 @@ impl Admissions {
             bail!("repository concurrency limit reached; retry when a turn finishes");
         }
         if let Some(stop) = controls.stop_usd {
-            let pricing = crate::usage::load_pricing(store);
             let spent: f64 = store
                 .usage_since(controls.spend_since)?
                 .into_iter()
                 .filter(|u| u.repo_id == repo_id)
-                .filter_map(|u| crate::usage::price(u, &pricing).cost)
+                .filter_map(|u| crate::usage::price(u).cost)
                 .sum();
             if spent >= stop {
                 bail!("observed spend stop threshold reached; change repository controls to continue (unknown costs may be missing)");
@@ -331,12 +330,11 @@ impl Store {
             Event::Usage { session_id, usage } => {
                 let controls = self.repo_controls(&usage.record.repo_id)?;
                 if let Some(warn) = controls.warning_usd {
-                    let pricing = crate::usage::load_pricing(self);
                     let spent: f64 = self
                         .usage_since(controls.spend_since)?
                         .into_iter()
                         .filter(|u| u.repo_id == usage.record.repo_id)
-                        .filter_map(|u| crate::usage::price(u, &pricing).cost)
+                        .filter_map(|u| crate::usage::price(u).cost)
                         .sum();
                     if spent >= warn {
                         let id = format!("spend:{}:{}:{warn}", usage.record.repo_id, controls.spend_since);

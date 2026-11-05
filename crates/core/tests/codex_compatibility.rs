@@ -148,16 +148,6 @@ async fn codex_plan_uses_read_only_sandbox_and_forwards_permissions() {
 async fn codex_usage_uses_reported_model_and_separate_cached_tokens() {
     let h = Harness::new(&[], None, None);
     h.ready().await;
-    let mut pricing = suneiro_core::usage::Pricing::new();
-    pricing.insert(
-        "gpt-small".into(),
-        suneiro_core::usage::ModelPrice {
-            input: 2.0,
-            cached_input: 0.5,
-            output: 10.0,
-        },
-    );
-    suneiro_core::usage::save_pricing(&h.core.store, &pricing).unwrap();
     h.turn("tokens").await;
     let rows = h.core.usage(0).unwrap();
     assert_eq!(rows.len(), 1);
@@ -168,8 +158,10 @@ async fn codex_usage_uses_reported_model_and_separate_cached_tokens() {
         (193, 23936, 12)
     );
     assert!(row.record.cost_usd.is_none());
-    assert!(row.estimated);
-    assert!((row.cost.unwrap() - (193.0 * 2.0 + 23936.0 * 0.5 + 12.0 * 10.0) / 1_000_000.0).abs() < 1e-12);
+    // Not in the built-in price catalog: the cost stays unknown instead of guessed.
+    assert!(suneiro_core::usage::catalog_price("gpt-small").is_none());
+    assert!(!row.estimated);
+    assert_eq!(row.cost, None);
 }
 
 #[tokio::test]

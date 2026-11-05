@@ -89,7 +89,6 @@ export type Usage = {
   cost: number | null;
   estimated: boolean;
 };
-export type ModelPrice = { input: number; cachedInput: number; output: number };
 
 export type Settings = {
   loadout: LoadoutEntry[];
@@ -258,8 +257,6 @@ export const api = {
   createSession: (workspaceId: string, agentId: string, model?: string | null, effort?: string | null) =>
     invoke<Session>("create_session", { workspaceId, agentId, model: model ?? null, effort: effort ?? null }),
   usage: (since = 0) => invoke<Usage[]>("usage", { since }),
-  getPricing: () => invoke<Record<string, ModelPrice>>("get_pricing"),
-  savePricing: (pricing: Record<string, ModelPrice>) => invoke<void>("save_pricing", { pricing }),
   modelCatalogs: () => invoke<Record<string, Catalog>>("model_catalogs"),
   refreshCatalog: (agentId: string) => invoke<Catalog>("refresh_catalog", { agentId }),
   connectSession: (sessionId: string) => invoke<void>("connect_session", { sessionId }),

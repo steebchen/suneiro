@@ -928,21 +928,7 @@ impl Core {
 
     /// Usage since `since` (ms) with costs reported or estimated.
     pub fn usage(&self, since: i64) -> Result<Vec<usage::PricedUsage>> {
-        let pricing = usage::load_pricing(&self.store);
-        Ok(self
-            .store
-            .usage_since(since)?
-            .into_iter()
-            .map(|u| usage::price(u, &pricing))
-            .collect())
-    }
-
-    pub fn pricing(&self) -> usage::Pricing {
-        usage::load_pricing(&self.store)
-    }
-
-    pub fn save_pricing(&self, pricing: &usage::Pricing) -> Result<()> {
-        usage::save_pricing(&self.store, pricing)
+        Ok(self.store.usage_since(since)?.into_iter().map(usage::price).collect())
     }
 
     // ---- model catalog ----

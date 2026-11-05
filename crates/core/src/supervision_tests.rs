@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     store::UsageRecord,
-    usage::{price, ModelPrice},
+    usage::price,
 };
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -259,7 +259,7 @@ fn spend_warning_and_delegation_report_are_durable_deduplicated_entries() {
     store.add_usage(&u).unwrap();
     let usage = Event::Usage {
         session_id: "s".into(),
-        usage: price(u, &Default::default()),
+        usage: price(u),
     };
     assert_eq!(store.observe_supervision(&usage).unwrap().len(), 1);
     assert!(store.observe_supervision(&usage).unwrap().is_empty());
@@ -287,20 +287,12 @@ fn hierarchy_rollup_prices_each_original_row_once_after_reopen() {
     store.conn.lock().execute_batch("UPDATE sessions SET parent_session_id='s' WHERE id='c'; UPDATE sessions SET parent_session_id='c' WHERE id='g';").unwrap();
     for u in [
         row("s", "reported", Some(3.0)),
-        row("c", "priced", None),
+        row("c", "gpt-6-sol", None),
         row("g", "unknown", None),
         row("unrelated", "reported", Some(100.0)),
     ] {
         store.add_usage(&u).unwrap();
     }
-    let pricing = [(
-        "priced".into(),
-        ModelPrice {
-            input: 2.0,
-            ..Default::default()
-        },
-    )]
-    .into();
     for _ in 0..2 {
         let reopened = Store::open(&dir.path().join("db.sqlite")).unwrap();
         let ids = reopened.subtree_session_ids("s").unwrap().into_iter().collect();
@@ -310,7 +302,7 @@ fn hierarchy_rollup_prices_each_original_row_once_after_reopen() {
                 .usage_since(0)
                 .unwrap()
                 .into_iter()
-                .map(|u| price(u, &pricing))
+                .map(price)
                 .collect(),
         );
         assert_eq!(total.sessions, 3);

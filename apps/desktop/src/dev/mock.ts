@@ -161,7 +161,7 @@ async function streamReply(sessionId: string, text: string, images?: string[]) {
   emit({ type: "permissionRequest", sessionId, requestId: "p1", toolCall: { title: "Write src/server/limiter.test.ts" }, options: [{ optionId: "allow", name: "Allow", kind: "allow_once" }, { optionId: "always", name: "Always allow", kind: "allow_always" }, { optionId: "reject", name: "Reject", kind: "reject_once" }] });
 }
 
-let pricing: Record<string, any> = {};
+const catalogPrices: Record<string, { input: number; cachedInput: number; output: number }> = { "gpt-6-astra": { input: 10, cachedInput: 1, output: 50 } };
 const attachments = new Map<string, string>();
 const mergeState: Record<string, any> = {};
 const supervision = mockSupervision(sessions, workspaces, usageRows, emit);
@@ -180,7 +180,7 @@ function usageRows() {
       const input = Math.floor(rand() * 4000);
       const cached = Math.floor(20000 + rand() * 180000);
       const output = Math.floor(200 + rand() * 6000);
-      const p = pricing[model];
+      const p = catalogPrices[model];
       const reported = agent === "codex" ? null : agent === "opencode" ? 0.01 * rand() : (input * 5 + cached * 0.5 + output * 25) / 1e6;
       const cost = reported ?? (p ? (input * p.input + cached * p.cachedInput + output * p.output) / 1e6 : null);
       rows.push({ sessionId: session, workspaceId: ws, repoId: "r1", agent, model, ts: now - d * 86400e3 - t * 600e3, inputTokens: input, cachedTokens: cached, outputTokens: output, costUsd: reported, cost, estimated: reported === null && cost !== null });
@@ -400,8 +400,6 @@ const handlers: Record<string, (a: any) => any> = {
     };
   },
   usage: () => usageRows(),
-  get_pricing: () => pricing,
-  save_pricing: (a) => void (pricing = a.pricing),
   check_for_updates: () => updateStatus,
   update_status: () => updateStatus,
   install_update: (a) => {

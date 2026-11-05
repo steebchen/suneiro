@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api, type ChangedFile, type AgentDef, type AgentStatus, type Catalog, type LoadoutEntry, type ModelPrice, type PrStatus, type Settings, type Usage, type UpdateStatus, type ConfigOption, type CoreEvent, type PermissionOption, type Repo, type Session, type Workspace, type SessionCapabilities, type ConductorScan } from "./api";
+import { api, type ChangedFile, type AgentDef, type AgentStatus, type Catalog, type LoadoutEntry, type PrStatus, type Settings, type Usage, type UpdateStatus, type ConfigOption, type CoreEvent, type PermissionOption, type Repo, type Session, type Workspace, type SessionCapabilities, type ConductorScan } from "./api";
 import { applyEvents, emptyTranscript, type Transcript } from "./transcript";
 import { handleSupervisionEvents, loadInbox } from "./supervision";
 import { notifyOnce } from "./notifications";
@@ -91,7 +91,6 @@ type State = {
   catalogs: Record<string, Catalog>;
   /** every recorded turn's tokens and cost, oldest first */
   usage: Usage[];
-  pricing: Record<string, ModelPrice>;
   /** repos recently used with coding agents, for "Add repository" */
   recents: { path: string; name: string; lastUsed: number }[];
   /** newer app version and how far installing it got */
@@ -128,7 +127,6 @@ export const useStore = create<State>(() => ({
   catalogs: {},
   recents: [],
   usage: [],
-  pricing: {},
   update: null,
   updateDismissed: null,
   conductor: null,
@@ -401,14 +399,6 @@ export const actions = {
   },
 
   async loadUsage() {
-    const [usage, pricing] = await Promise.all([api.usage(0).catch(() => null), api.getPricing().catch(() => null)]);
-    set({ ...(usage ? { usage } : {}), ...(pricing ? { pricing } : {}) });
-  },
-
-  async savePricing(pricing: Record<string, ModelPrice>) {
-    set({ pricing });
-    await guard(api.savePricing(pricing));
-    // Estimates are computed by the core; reload so they reflect new prices.
     const usage = await api.usage(0).catch(() => null);
     if (usage) set({ usage });
   },

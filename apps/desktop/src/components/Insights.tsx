@@ -146,12 +146,7 @@ export function Insights() {
                   return modelName(agent, findModel(catalogs, agent, model), model);
                 })
                 .join(", ")}
-              ). Their tokens are counted; add their
-              prices under{" "}
-              <button onClick={() => actions.openSettings(true)} className="text-accent underline underline-offset-2">
-                Settings → Pricing
-              </button>{" "}
-              to include them in costs.
+              ) and have no catalog price. Their tokens are counted but not included in costs.
             </div>
           )}
           <p className="text-[11px] text-faint">

@@ -410,16 +410,6 @@ fn usage(app: State<'_, App>, since: i64) -> Res<Value> {
 }
 
 #[tauri::command]
-fn get_pricing(app: State<'_, App>) -> Value {
-    serde_json::to_value(app.core.pricing()).unwrap_or_default()
-}
-
-#[tauri::command]
-fn save_pricing(app: State<'_, App>, pricing: suneiro_core::usage::Pricing) -> Res<()> {
-    app.core.save_pricing(&pricing).map_err(err)
-}
-
-#[tauri::command]
 fn model_catalogs(app: State<'_, App>) -> Value {
     serde_json::to_value(app.core.catalogs()).unwrap_or_default()
 }
@@ -695,8 +685,6 @@ pub fn run() {
             fetch_image,
             model_catalogs,
             usage,
-            get_pricing,
-            save_pricing,
             refresh_catalog,
             refresh_prs,
             terminal_open,

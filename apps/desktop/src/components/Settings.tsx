@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import clsx from "clsx";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Check, CircleAlert, Loader2, RefreshCw, X } from "lucide-react";
@@ -7,7 +7,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { api, type AgentStatus, type Settings as SettingsT } from "../lib/api";
 import { actions, useStore } from "../lib/store";
 import { followTheme, xtermTheme } from "../lib/xtermTheme";
-import { AgentIcon, findModel, modelName } from "../lib/models";
+import { AgentIcon } from "../lib/models";
 import { ModelSettings } from "./ModelSettings";
 import { RepoSettings } from "./RepoSettings";
 
@@ -40,12 +40,6 @@ export function Settings() {
             <Field label="Default to plan mode in new chats" hint="New chats start in plan mode instead of auto-accepting changes. Shift+Tab switches any time.">
               <Toggle checked={settings.planByDefault} onChange={(planByDefault) => actions.saveSettings({ planByDefault })} />
             </Field>
-          </Section>
-          <Section
-            title="Pricing"
-            description="Claude Code and OpenCode report their own costs. For models that only report tokens (Codex), enter prices to estimate costs in Insights. USD per million tokens."
-          >
-            <PricingTable />
           </Section>
           <Section title="Related chats">
             <Field label="Related chat levels" hint="Choose how many levels of related chats you can add. Lowering this keeps existing chats. Closing a chat keeps its related chats.">
@@ -272,64 +266,6 @@ function SetupTerminal({ title, command, onClose }: { title: string; command: st
       </div>
       <div ref={ref} className="h-56 bg-bg" />
     </div>
-  );
-}
-
-/** Per-model prices for agents that report tokens but not cost. */
-function PricingTable() {
-  const pricing = useStore((s) => s.pricing);
-  const catalogs = useStore((s) => s.catalogs);
-  const usage = useStore((s) => s.usage);
-  const models = useMemo(() => {
-    const set = new Map<string, string>();
-    for (const m of catalogs.codex?.models ?? []) set.set(m.value.split("[")[0], "codex");
-    for (const u of usage) if (u.costUsd === null) set.set(u.model.split("[")[0], u.agent);
-    for (const k of Object.keys(pricing)) if (!set.has(k)) set.set(k, "codex");
-    return [...set.entries()];
-  }, [catalogs, usage, pricing]);
-  if (!models.length) return <div className="text-xs text-muted">No models need prices yet.</div>;
-  const update = (model: string, field: "input" | "cachedInput" | "output", value: string) => {
-    const cur = pricing[model] ?? { input: 0, cachedInput: 0, output: 0 };
-    const next = { ...pricing, [model]: { ...cur, [field]: Number(value) || 0 } };
-    if (!next[model].input && !next[model].cachedInput && !next[model].output) delete next[model];
-    void actions.savePricing(next);
-  };
-  return (
-    <div className="overflow-hidden rounded-lg border border-border">
-      <div className="grid grid-cols-[1fr_repeat(3,90px)] gap-2 border-b border-border bg-panel px-3 py-1.5 text-[11px] text-muted">
-        <span>Model</span>
-        <span>Input</span>
-        <span>Cached input</span>
-        <span>Output</span>
-      </div>
-      {models.map(([model, agent]) => (
-        <div key={model} className="grid grid-cols-[1fr_repeat(3,90px)] items-center gap-2 border-b border-border px-3 py-1.5 last:border-b-0">
-          <span className="flex min-w-0 items-center gap-1.5 truncate text-xs">
-            <AgentIcon agent={agent} size={12} />
-            {modelName(agent, findModel(catalogs, agent, model), model)}
-          </span>
-          {(["input", "cachedInput", "output"] as const).map((field) => (
-            <PriceInput key={field} value={pricing[model]?.[field]} onCommit={(v) => update(model, field, v)} />
-          ))}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function PriceInput({ value, onCommit }: { value?: number; onCommit: (v: string) => void }) {
-  const [v, setV] = useState(value ? String(value) : "");
-  useEffect(() => setV(value ? String(value) : ""), [value]);
-  return (
-    <input
-      value={v}
-      inputMode="decimal"
-      placeholder="—"
-      onChange={(e) => setV(e.target.value.replace(/[^0-9.]/g, ""))}
-      onBlur={() => v !== (value ? String(value) : "") && onCommit(v)}
-      onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
-      className="selectable w-full rounded border border-border bg-bg px-1.5 py-1 text-right text-xs tabular-nums outline-none focus:border-accent"
-    />
   );
 }
 

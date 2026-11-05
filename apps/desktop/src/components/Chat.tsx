@@ -833,7 +833,7 @@ function SessionCost({ sessionId }: { sessionId: string }) {
       title={[
         `This chat: ${formatTokens(t.tokens)} tokens`,
         known ? `${formatCost(t.cost, t.estimated)}${t.estimated ? " (partly estimated from tokens)" : " as reported by the agent"}` : "",
-        t.unpriced ? `${t.unpriced} turn(s) without a price: set model prices in Settings → Pricing` : "",
+        t.unpriced ? `${t.unpriced} turn(s) on models without a catalog price` : "",
         "At API prices; subscription plans aren't billed per token.",
       ]
         .filter(Boolean)

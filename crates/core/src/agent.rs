@@ -565,8 +565,7 @@ impl Agents {
             cost_usd: cost,
         };
         if self.store.add_usage(&record).is_ok() {
-            let pricing = crate::usage::load_pricing(&self.store);
-            self.emitter.emit(Event::Usage { session_id: s.id.clone(), usage: crate::usage::price(record, &pricing) });
+            self.emitter.emit(Event::Usage { session_id: s.id.clone(), usage: crate::usage::price(record) });
         }
     }
 
