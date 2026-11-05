@@ -88,6 +88,14 @@ export function Settings() {
           <Section title="Import" description="Bring workspaces over from another app. Their worktrees, branches and uncommitted changes stay where they are.">
             <ConductorSettings />
           </Section>
+          <Section title="Privacy">
+            <Field
+              label="Send error reports"
+              hint="When Suneiro crashes or hits an unexpected error, send the error and stack trace with the app version and OS to the Suneiro developers (PostHog). Never your prompts, chats, code or files, and no account or install ID. Turning it off applies right away; turning it on, after a restart."
+            >
+              <Toggle checked={settings.errorReports} onChange={(errorReports) => actions.saveSettings({ errorReports })} />
+            </Field>
+          </Section>
           <Section title="Appearance & tools">
             <Field label="Theme">
               <Segmented<SettingsT["theme"]>

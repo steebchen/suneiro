@@ -102,6 +102,8 @@ export type Settings = {
   editor: string;
   theme: "system" | "light" | "dark";
   renameBranches: boolean;
+  /** Send panics and uncaught UI errors (no prompts, chats or files) to the developers. */
+  errorReports: boolean;
   maxTabDepth: number;
 };
 
