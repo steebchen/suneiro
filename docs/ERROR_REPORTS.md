@@ -23,9 +23,17 @@ Not covered: native (non-panic) crashes such as segfaults in system libraries, w
 
 ## PostHog project setup (one time)
 
-1. In PostHog → Project settings → General, enable **Discard client IP data**.
-2. Open Error Tracking (https://us.posthog.com/project/701028/error_tracking) and set up alerts (e.g. new issue → Slack/email).
-3. Optional, for readable stack traces in release builds: upload JavaScript source maps and Rust debug symbols with `posthog-cli` from the release workflow (`posthog-cli sourcemap inject/upload` for `apps/desktop/dist`; see https://posthog.com/docs/error-tracking/upload-source-maps). Until then, UI frames point into the minified bundle; Rust panic frames are resolved in-process as far as the release binary's symbols allow.
+1. **Discard client IP data** is on (Project settings → General).
+2. Alerts: PostHog has no email destination for error alerts, so an assignment rule (Error tracking → Configuration → Assignment rules) assigns every new issue to the maintainer, and their "Issue assigned" email notification plus the "Error tracking weekly digest" are on. Slack/Discord/webhook alerts for spikes and reopened issues can be added under Configuration → Alerting.
+
+## Readable stack traces
+
+Release builds upload symbols with `posthog-cli` (`scripts/posthog-symbols.mjs`, pinned to `@posthog/cli@0.19.0`, release `suneiro-desktop@<version>`):
+
+- **UI:** `tauri.release.conf.json` runs `pnpm build:release` = `vite build --sourcemap` then `posthog-symbols.mjs sourcemaps dist`. It injects a chunk ID into every bundle (`_posthogChunkIds`), uploads the maps, then deletes `.map` files and `sourceMappingURL` comments so no source ships inside the app. `lib/errorReports.ts` attaches each frame's `chunk_id`, which PostHog uses to find the map.
+- **Rust:** the release step builds with `CARGO_PROFILE_RELEASE_DEBUG=line-tables-only` and `SPLIT_DEBUGINFO=packed`, so line tables go into a separate `suneiro-desktop.dSYM` per architecture (the shipped binary does not grow), and `posthog-symbols.mjs dsyms` uploads both after the release is published.
+- **Credentials:** repository secret `POSTHOG_CLI_API_KEY`, a personal API key named "Suneiro release symbols (CI)" scoped to `error_tracking:write` on project 701028 only. Without the secret, uploads are skipped and the release still builds; a failed source-map upload is a warning, a failed dSYM upload fails the (already published) job so it is visible.
+- Locally `pnpm build` produces no source maps; `pnpm --filter desktop build:release` without the env vars builds and strips maps without uploading.
 
 ## Try it locally
 

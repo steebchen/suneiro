@@ -17,6 +17,13 @@ jobs:
     runs-on: macos-latest
     permissions:
       contents: write
+    env:
+      # Symbol uploads for readable error stack traces (scripts/posthog-symbols.mjs).
+      # Personal key scoped to error_tracking:write on the Suneiro Desktop project;
+      # without it the release still builds, just without uploads.
+      POSTHOG_CLI_API_KEY: ${{ secrets.POSTHOG_CLI_API_KEY }}
+      POSTHOG_CLI_PROJECT_ID: "701028"
+      POSTHOG_CLI_HOST: https://us.posthog.com
     steps:
       - uses: actions/checkout@v4
 
@@ -63,6 +70,10 @@ jobs:
           # Notarization.
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          # Line tables in a separate dSYM per architecture (the shipped binary
+          # stays the same size), uploaded to PostHog below for panic frames.
+          CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
+          CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO: packed
         with:
           projectPath: apps/desktop
           tagName: v__VERSION__
@@ -85,3 +96,10 @@ jobs:
           dmg=$(jq -r '.[] | select(endswith(".dmg"))' <<<"$ARTIFACTS" | head -n1)
           cp "$dmg" "$RUNNER_TEMP/Suneiro.dmg"
           gh release upload "v$VERSION" "$RUNNER_TEMP/Suneiro.dmg" --clobber
+
+      # The JavaScript source maps were uploaded during the build (pnpm build:release).
+      - name: Upload Rust debug symbols to PostHog
+        run: |
+          node scripts/posthog-symbols.mjs dsyms \
+            target/aarch64-apple-darwin/release/suneiro-desktop.dSYM \
+            target/x86_64-apple-darwin/release/suneiro-desktop.dSYM

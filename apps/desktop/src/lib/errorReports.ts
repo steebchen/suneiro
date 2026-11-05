@@ -2,7 +2,8 @@
 // Rust decides whether anything is sent (release build + Settings → Send error
 // reports) and masks the home folder; this file only shapes and throttles.
 
-export type StackFrame = { function?: string; filename?: string; lineno?: number; colno?: number };
+/** `chunk_id` names the bundle's uploaded source map (see `chunkIds`). */
+export type StackFrame = { function?: string; filename?: string; lineno?: number; colno?: number; chunk_id?: string };
 export type WebError = { mechanism: "error" | "unhandledrejection"; name: string; message: string; frames: StackFrame[] };
 
 const MAX_REPORTS = 20;
@@ -33,6 +34,26 @@ export function toWebError(value: unknown, mechanism: WebError["mechanism"]): We
   return { mechanism, name: mechanism === "unhandledrejection" ? "UnhandledRejection" : "Error", message, frames: [] };
 }
 
+/**
+ * Release builds run `posthog-cli sourcemap inject`, which makes every bundle
+ * record `_posthogChunkIds[<stack captured inside the bundle>] = <chunk ID>`.
+ * Map each bundle URL to its chunk ID so PostHog can find the uploaded source map.
+ */
+export function chunkIds(registry: unknown = (globalThis as { _posthogChunkIds?: unknown })._posthogChunkIds): Map<string, string> {
+  const map = new Map<string, string>();
+  if (!registry || typeof registry !== "object") return map;
+  for (const [stack, id] of Object.entries(registry)) {
+    const file = parseStack(stack).at(-1)?.filename;
+    if (file && typeof id === "string") map.set(file, id);
+  }
+  return map;
+}
+
+export function withChunkIds(error: WebError, ids: Map<string, string>): WebError {
+  if (!ids.size) return error;
+  return { ...error, frames: error.frames.map((f) => (f.filename && ids.has(f.filename) ? { ...f, chunk_id: ids.get(f.filename) } : f)) };
+}
+
 function safeJson(value: unknown) {
   try {
     return JSON.stringify(value) ?? String(value);
@@ -51,7 +72,7 @@ export function installErrorReporting(send: (error: WebError) => Promise<unknown
     if (seen.has(key)) return;
     seen.add(key);
     // Never let reporting itself raise another error event.
-    send(error).catch(() => {});
+    send(withChunkIds(error, chunkIds())).catch(() => {});
   };
   target.addEventListener("error", (e: ErrorEvent) => {
     // Resource load failures (img/script) have no `error` and aren't app bugs.

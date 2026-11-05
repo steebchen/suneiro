@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { installErrorReporting, parseStack, toWebError } from "../lib/errorReports.ts";
+import { chunkIds, installErrorReporting, parseStack, toWebError, withChunkIds } from "../lib/errorReports.ts";
 
 test("parses WebKit and V8 stacks oldest call first", () => {
   const webkit = "render@tauri://localhost/assets/index-abc.js:12:34\n@tauri://localhost/assets/index-abc.js:1:2\nglobal code";
@@ -36,6 +36,26 @@ test("forwards window errors and rejections once each, capped and never throwing
   assert.equal(sent[0].message, "same");
   assert.equal(sent[1].mechanism, "unhandledrejection");
   assert.equal(sent.length, 20);
+});
+
+test("frames carry the chunk IDs injected by posthog-cli", () => {
+  const ids = chunkIds({
+    "@tauri://localhost/assets/index-abc.js:1:120\nglobal code": "chunk-index",
+    "Error\n    at http://tauri.localhost/assets/lazy-def.js:1:10": "chunk-lazy",
+    "": "ignored",
+    "@tauri://localhost/assets/bad.js:1:1": 42,
+  });
+  assert.deepEqual([...ids], [["tauri://localhost/assets/index-abc.js", "chunk-index"], ["http://tauri.localhost/assets/lazy-def.js", "chunk-lazy"]]);
+  assert.equal(chunkIds(undefined).size, 0);
+  const error = withChunkIds(toWebError(Object.assign(new Error("x"), { stack: "a@tauri://localhost/assets/index-abc.js:3:4\nb@tauri://localhost/other.js:5:6" }), "error"), ids);
+  assert.deepEqual(error.frames.map((f) => f.chunk_id), [undefined, "chunk-index"]);
+});
+
+test("release builds upload source maps before Tauri embeds the bundle", () => {
+  const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
+  assert.match(pkg.scripts["build:release"], /vite build --sourcemap && node \.\.\/\.\.\/scripts\/posthog-symbols\.mjs sourcemaps dist/);
+  const release = JSON.parse(readFileSync(new URL("../../src-tauri/tauri.release.conf.json", import.meta.url), "utf8"));
+  assert.equal(release.build.beforeBuildCommand, "pnpm build:release");
 });
 
 test("the desktop entry installs reporting only outside the browser mock", () => {

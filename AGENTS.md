@@ -54,7 +54,7 @@ crates/core/              Rust core, UI-agnostic (no Tauri dependency)
                           usage.rs, image.rs (real agents), recent.rs, title.rs, pr.rs
 apps/desktop/src-tauri/   Thin Tauri 2 layer: commands + one batched event channel;
                           src/updater.rs = update check, install on confirm;
-                          src/error_reports.rs = PostHog error tracking
+                          src/error_reports.rs = PostHog error tracking; release symbol uploads: scripts/posthog-symbols.mjs
 apps/desktop/src/         React 19 UI
   lib/api.ts              Typed wrappers for every Tauri command + event types
   lib/store.ts            zustand store; handleEvents folds core events per frame

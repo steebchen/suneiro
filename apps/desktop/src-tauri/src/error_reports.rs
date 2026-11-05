@@ -167,6 +167,9 @@ pub struct WebFrame {
     pub filename: Option<String>,
     pub lineno: Option<u32>,
     pub colno: Option<u32>,
+    /// Source map chunk from `posthog-cli sourcemap inject` (release builds).
+    #[serde(default)]
+    pub chunk_id: Option<String>,
 }
 
 #[tauri::command]
@@ -200,7 +203,7 @@ fn web_event(error: WebError) -> posthog_rs::Event {
             let in_app = f.filename.as_deref().is_some_and(|name| {
                 name.starts_with("tauri://") || name.starts_with("http://tauri.localhost") || name.starts_with("http://localhost:1420")
             });
-            json!({
+            let mut frame = json!({
                 "platform": "web:javascript",
                 "function": f.function.as_deref().filter(|s| !s.is_empty()).unwrap_or("?"),
                 "filename": f.filename,
@@ -208,7 +211,11 @@ fn web_event(error: WebError) -> posthog_rs::Event {
                 "lineno": f.lineno,
                 "colno": f.colno,
                 "in_app": in_app,
-            })
+            });
+            if let Some(id) = f.chunk_id.as_deref().filter(|id| !id.is_empty()) {
+                frame["chunk_id"] = id.into();
+            }
+            frame
         })
         .collect();
     let stack = (!frames.is_empty()).then(|| json!({ "type": "raw", "frames": frames }));
@@ -263,8 +270,8 @@ mod tests {
             name: "TypeError".into(),
             message: "x".repeat(MAX_MESSAGE + 10),
             frames: vec![
-                WebFrame { function: Some("boot".into()), filename: Some("tauri://localhost/assets/index.js".into()), lineno: Some(1), colno: Some(2) },
-                WebFrame { function: None, filename: Some("https://example.com/x.js".into()), lineno: None, colno: None },
+                WebFrame { function: Some("boot".into()), filename: Some("tauri://localhost/assets/index.js".into()), lineno: Some(1), colno: Some(2), chunk_id: Some("c1".into()) },
+                WebFrame { function: None, filename: Some("https://example.com/x.js".into()), lineno: None, colno: None, chunk_id: None },
             ],
         });
         let props = event.properties();
@@ -278,6 +285,8 @@ mod tests {
         assert_eq!(frames[0]["in_app"], true);
         assert_eq!(frames[1]["function"], "?");
         assert_eq!(frames[1]["in_app"], false);
+        assert_eq!(frames[0]["chunk_id"], "c1");
+        assert!(frames[1].get("chunk_id").is_none());
     }
 
     #[test]
